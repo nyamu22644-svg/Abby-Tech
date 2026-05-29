@@ -1,0 +1,6 @@
+{
+  "name": "Abby Tech OS",
+  "description": "Enterprise-grade smart hatchery management platform with offline-first capabilities and IoT integration.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
