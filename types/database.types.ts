@@ -68,10 +68,9 @@ export interface Database {
           tenant_id: string | null
           batch_number: string
           supplier_id: string | null
-          supplier_name?: string
           incubator_id: string | null
           quantity_received: number
-          status: 'RECEIVED' | 'EARLY_INCUBATION' | 'CANDLING' | 'LOCKDOWN' | 'HATCHING' | 'COMPLETED' | 'STORED' | 'SOLD' | 'ARCHIVED' | 'DISCARDED'
+          status: 'LOGGED' | 'SETTER' | 'HATCHER' | 'BROODER' | 'COMPLETED' | 'FAILED' | 'DISCARDED' | 'CANCELLED'
           set_date: string | null
           expected_hatch_date: string | null
           actual_hatch_date: string | null
@@ -92,10 +91,9 @@ export interface Database {
           tenant_id?: string | null
           batch_number: string
           supplier_id?: string | null
-          supplier_name?: string
           incubator_id?: string | null
           quantity_received: number
-          status?: 'RECEIVED' | 'EARLY_INCUBATION' | 'CANDLING' | 'LOCKDOWN' | 'HATCHING' | 'COMPLETED' | 'STORED' | 'SOLD' | 'ARCHIVED' | 'DISCARDED'
+          status?: 'LOGGED' | 'SETTER' | 'HATCHER' | 'BROODER' | 'COMPLETED' | 'FAILED' | 'DISCARDED' | 'CANCELLED'
           set_date?: string | null
           expected_hatch_date?: string | null
           actual_hatch_date?: string | null

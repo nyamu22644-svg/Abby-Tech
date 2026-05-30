@@ -2,6 +2,7 @@
 
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
+import { logIncubatorCreated, logAlertTriggered } from '@/lib/audit'
 
 export async function createIncubator(formData: FormData) {
   const supabase = await createClient()
@@ -15,17 +16,23 @@ export async function createIncubator(formData: FormData) {
     return { error: 'Invalid input data' }
   }
 
-  const { error } = await supabase.from('incubators').insert({
+  const { data: newIncubator, error } = await supabase.from('incubators').insert({
     name,
     controller_type: controller_type as any,
     model_number,
     capacity,
-    automation_capable: true
-  })
+    automation_capable: true,
+    operational_status: 'ACTIVE',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString()
+  }).select().single()
 
   if (error) {
     return { error: error.message }
   }
+
+  // Log incubator creation
+  await logIncubatorCreated(newIncubator.id, { name, controller_type, model_number, capacity })
 
   revalidatePath('/incubation')
   return { success: true }
@@ -60,30 +67,45 @@ export async function logEnvironmentInfo(formData: FormData) {
   // Generate simple alerts
   if (!isNaN(temperature)) {
     if (temperature > 38.0) {
-      await supabase.from('incubation_alerts').insert({
+      const { data: alert } = await supabase.from('incubation_alerts').insert({
         incubator_id,
         title: 'Overheating Detected',
         description: `Temperature logged at ${temperature}°C, exceeding safety thresholds.`,
         severity: 'CRITICAL',
-      })
+        status: 'ACTIVE',
+        triggered_at: new Date().toISOString(),
+      }).select().single()
+      if (alert) {
+        await logAlertTriggered(alert.id, 'CRITICAL', alert.title, alert.description)
+      }
     } else if (temperature < 35.0) {
-      await supabase.from('incubation_alerts').insert({
+      const { data: alert } = await supabase.from('incubation_alerts').insert({
         incubator_id,
         title: 'Low Temperature',
         description: `Temperature logged at ${temperature}°C.`,
         severity: 'HIGH',
-      })
+        status: 'ACTIVE',
+        triggered_at: new Date().toISOString(),
+      }).select().single()
+      if (alert) {
+        await logAlertTriggered(alert.id, 'HIGH', alert.title, alert.description)
+      }
     }
   }
 
   if (!isNaN(humidity)) {
     if (humidity > 70.0 || humidity < 40.0) {
-      await supabase.from('incubation_alerts').insert({
+      const { data: alert } = await supabase.from('incubation_alerts').insert({
         incubator_id,
         title: 'Humidity Instability',
         description: `Humidity logged at ${humidity}%.`,
         severity: 'MEDIUM',
-      })
+        status: 'ACTIVE',
+        triggered_at: new Date().toISOString(),
+      }).select().single()
+      if (alert) {
+        await logAlertTriggered(alert.id, 'MEDIUM', alert.title, alert.description)
+      }
     }
   }
 
@@ -95,11 +117,11 @@ export async function assignBatchToIncubator(formData: FormData) {
   const supabase = await createClient()
   const batch_id = formData.get('batch_id') as string
   const incubator_id = formData.get('incubator_id') as string
-  const phase = formData.get('phase') as string // EARLY_INCUBATION, CANDLING, LOCKDOWN, HATCHING
+  const phase = formData.get('phase') as string // SETTER, HATCHER, BROODER
   
   if (!batch_id) return { error: 'Missing batch' }
 
-  const targetStatus = phase || 'EARLY_INCUBATION'
+  const targetStatus = phase || 'SETTER'
 
   const { error } = await supabase.from('egg_batches').update({
     incubator_id: incubator_id || null,

@@ -47,11 +47,11 @@ export default function SettingsPage() {
             <div className="space-y-4 max-w-md">
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-muted-foreground">Facility Name</label>
-                <input type="text" defaultValue="Abby Tech Pilot Facility" className="w-full h-9 rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
+                <input type="text" placeholder="Enter facility name" className="w-full h-9 rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
               </div>
               <div className="space-y-1.5">
                 <label className="text-sm font-medium text-muted-foreground">Default Incubation Cycle (Days)</label>
-                <input type="number" defaultValue="21" className="w-full h-9 rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
+                <input type="number" placeholder="21" className="w-full h-9 rounded-md border border-border bg-background px-3 text-sm focus:outline-none focus:ring-1 focus:ring-primary/30" />
               </div>
             </div>
           </Card>

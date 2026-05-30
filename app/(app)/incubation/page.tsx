@@ -22,7 +22,7 @@ export default async function IncubationDashboard() {
     supabase.from('incubators').select('*').order('name'),
     supabase.from('egg_batches')
       .select('*, incubators(name, controller_type)')
-      .in('status', ['EARLY_INCUBATION', 'CANDLING', 'LOCKDOWN', 'HATCHING'])
+      .in('status', ['SETTER', 'HATCHER'])
       .order('set_date', { ascending: true }),
     supabase.from('incubation_alerts')
       .select('*, incubators(name), egg_batches(batch_number)')
@@ -31,7 +31,7 @@ export default async function IncubationDashboard() {
       .order('triggered_at', { ascending: false }),
     supabase.from('egg_batches')
       .select('id, batch_number, quantity_received')
-      .eq('status', 'RECEIVED')
+      .eq('status', 'LOGGED')
   ])
 
   const typedIncubators = incubators || []
@@ -53,9 +53,9 @@ export default async function IncubationDashboard() {
     const hatchExpected = batch.expected_hatch_date ? new Date(batch.expected_hatch_date) : 
       (batch.set_date ? addDays(new Date(batch.set_date), 21) : null)
 
-    const isCandlingDue = candlingDue && isPast(candlingDue) && (batch.status === 'EARLY_INCUBATION' || batch.status === 'CANDLING')
-    const isLockdownDue = lockdownDue && isPast(lockdownDue) && (batch.status === 'EARLY_INCUBATION' || batch.status === 'CANDLING' || batch.status === 'LOCKDOWN')
-    const isOverdueHatch = hatchExpected && isPast(hatchExpected) && batch.status !== 'COMPLETED'
+    const isCandlingDue = candlingDue && isPast(candlingDue) && batch.status === 'SETTER'
+    const isLockdownDue = lockdownDue && isPast(lockdownDue) && batch.status === 'SETTER'
+    const isOverdueHatch = hatchExpected && isPast(hatchExpected) && !['COMPLETED', 'FAILED', 'CANCELLED', 'DISCARDED'].includes(batch.status)
 
     if (isCandlingDue) {
       operationalTasks.push({ id: `c-${batch.id}`, type: 'CANDLING', batch: batch.batch_number, due: candlingDue })

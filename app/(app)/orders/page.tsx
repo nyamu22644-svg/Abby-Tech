@@ -54,9 +54,9 @@ export default async function OrdersPage() {
   const { data: activeBatches } = await supabase
     .from('egg_batches')
     .select('id, batch_number, quantity_received, quantity_hatched, quantity_culled, mortality_count, status')
-    .not('status', 'eq', 'SOLD')
     .not('status', 'eq', 'DISCARDED')
-    .not('status', 'eq', 'ARCHIVED');
+    .not('status', 'eq', 'FAILED')
+    .not('status', 'eq', 'CANCELLED');
 
   const batchAllocations = displayOrders.reduce((acc: any, curr) => {
     if (curr.allocated_batch_id) {
@@ -70,7 +70,7 @@ export default async function OrdersPage() {
     const allocated = batchAllocations[b.id] || 0;
     if (allocated > 0) {
       const projectedLoss = (b.quantity_culled || 0) + (b.mortality_count || 0);
-      const baseQuantity = b.status === 'COMPLETED' ? (b.quantity_hatched || 0) : ((b.quantity_received || 0) - projectedLoss);
+      const baseQuantity = ['COMPLETED', 'BROODER'].includes(b.status) ? (b.quantity_hatched || 0) : ((b.quantity_received || 0) - projectedLoss);
       if (baseQuantity < allocated) {
         fulfillmentRisks++;
       }

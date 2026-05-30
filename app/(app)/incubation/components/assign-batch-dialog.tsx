@@ -82,15 +82,14 @@ export function AssignBatchDialog({
 
           <div className="grid gap-2">
             <Label htmlFor="phase">Incubation Phase</Label>
-            <Select name="phase" defaultValue="EARLY_INCUBATION" required>
+            <Select name="phase" defaultValue="SETTER" required>
               <SelectTrigger>
                 <SelectValue placeholder="Phase" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="EARLY_INCUBATION">Early Incubation</SelectItem>
-                <SelectItem value="CANDLING">Candling</SelectItem>
-                <SelectItem value="LOCKDOWN">Lockdown / Transfer to Hatcher Baskets</SelectItem>
-                <SelectItem value="HATCHING">Hatching</SelectItem>
+                <SelectItem value="SETTER">Setter (Incubation)</SelectItem>
+                <SelectItem value="HATCHER">Hatcher (Lockdown / Hatch)</SelectItem>
+                <SelectItem value="BROODER">Brooder (Post-hatch)</SelectItem>
               </SelectContent>
             </Select>
           </div>

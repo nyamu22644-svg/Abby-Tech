@@ -21,7 +21,7 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
   // Fetch batch details
   const { data: batch } = await supabase
     .from('egg_batches')
-    .select('*')
+    .select('*, suppliers(name, contact_name, phone, email, address)')
     .eq('id', id)
     .single();
 
@@ -43,22 +43,95 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
     .eq('allocated_batch_id', id)
     .neq('status', 'CANCELLED');
 
-  const quantity = batch.quantity_received || 0;
-  const culled = batch.quantity_culled || 0;
-  const mortality = batch.mortality_count || 0;
-  const totalLosses = culled + mortality;
-  const hatched = batch.quantity_hatched || 0;
-  
-  const remainingInCycle = quantity - totalLosses;
-  const mortalityPercentage = quantity > 0 ? ((totalLosses / quantity) * 100).toFixed(1) : '0.0';
-  const hatchabilityPercentage = quantity > 0 ? ((hatched / quantity) * 100).toFixed(1) : '0.0';
-
   // Fetch mortality events for this batch
   const { data: mortalityEvents } = await supabase
     .from('mortality_events')
     .select('*')
     .eq('batch_id', id)
     .order('recorded_at', { ascending: false });
+
+  const { data: inspectionRecords } = await supabase
+    .from('batch_inspection_records')
+    .select('*')
+    .eq('batch_id', id)
+    .order('inspected_at', { ascending: false })
+    .limit(1);
+
+  const { data: acquisitionCosts } = await supabase
+    .from('batch_acquisition_costs')
+    .select('*')
+    .eq('batch_id', id)
+    .order('cost_date', { ascending: false });
+
+  const { data: incubationAssignments } = await supabase
+    .from('batch_incubation_assignments')
+    .select('*, incubators(name, controller_type)')
+    .eq('batch_id', id)
+    .order('assigned_at', { ascending: false })
+    .limit(1);
+
+  const { data: attachments } = await supabase
+    .from('batch_attachments')
+    .select('*')
+    .eq('batch_id', id)
+    .order('uploaded_at', { ascending: false });
+
+  const { data: receivedByProfile } = batch.received_by
+    ? await supabase
+        .from('user_profiles')
+        .select('first_name, last_name, email')
+        .eq('id', batch.received_by)
+        .maybeSingle()
+    : { data: null };
+
+  const quantity = batch.quantity_received || 0;
+  const culled = batch.quantity_culled || 0;
+  const mortality = batch.mortality_count || 0;
+  const totalLosses = culled + mortality;
+  const hatched = batch.quantity_hatched || 0;
+  const acceptedEggs = batch.accepted_eggs ?? null;
+
+  const inspectionRecord = (inspectionRecords || [])[0];
+  const inspectionCracked = inspectionRecord?.cracked_eggs ?? batch.cracked_eggs ?? 0;
+  const inspectionDirty = inspectionRecord?.dirty_eggs ?? batch.dirty_eggs ?? 0;
+  const inspectionRejected = inspectionRecord?.rejected_eggs ?? batch.rejected_eggs ?? 0;
+  const inspectionAccepted = inspectionRecord?.accepted_eggs ?? acceptedEggs ?? 0;
+  const inspectionStatus = batch.inspection_status || 'PENDING';
+  const inspectionCompletedAt = batch.inspection_completed_at || inspectionRecord?.inspected_at || null;
+  const inspectionNotes = batch.inspection_notes || inspectionRecord?.inspection_notes || null;
+
+  const assignment = (incubationAssignments || [])[0] || null;
+  const incubatorName = assignment?.incubators?.name || '—';
+  const incubatorType = assignment?.incubators?.controller_type || '';
+  const receivedByName = receivedByProfile
+    ? [receivedByProfile.first_name, receivedByProfile.last_name].filter(Boolean).join(' ').trim() || receivedByProfile.email || '—'
+    : '—';
+
+  const photoAttachments = (attachments || []).filter(
+    (attachment) => attachment.attachment_type === 'INSPECTION_PHOTO'
+  );
+
+  let photoUrls: Record<string, string> = {};
+  if (photoAttachments.length > 0) {
+    const paths = photoAttachments.map((attachment) => attachment.storage_path);
+    const { data: signedUrls, error: signedError } = await supabase
+      .storage
+      .from('batch-attachments')
+      .createSignedUrls(paths, 3600);
+
+    if (!signedError && signedUrls) {
+      photoUrls = signedUrls.reduce((acc: Record<string, string>, item: any) => {
+        if (item?.path && item?.signedUrl) {
+          acc[item.path] = item.signedUrl;
+        }
+        return acc;
+      }, {});
+    }
+  }
+  
+  const remainingInCycle = quantity - totalLosses;
+  const mortalityPercentage = quantity > 0 ? ((totalLosses / quantity) * 100).toFixed(1) : '0.0';
+  const hatchabilityPercentage = quantity > 0 ? ((hatched / quantity) * 100).toFixed(1) : '0.0';
 
   // --- Financial Calculations ---
   const initialCost = batch.total_initial_cost || 0;
@@ -80,6 +153,12 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
   const costPerChick = totalCost / chicksForCalculation;
 
   const estimatedLossAmount = (batch.total_financial_loss || 0) + (culled * costPerEgg); // Incorporating explicit mortality loss
+
+  const formatDate = (value?: string | null) => {
+    if (!value) return '—';
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString();
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in-95 duration-200 pb-10">
@@ -104,8 +183,7 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
             <StatusBadge status={batch.status || ''} />
           </div>
           <p className="text-sm text-muted-foreground mt-1.5 tracking-tight flex items-center gap-2">
-            Supplier: <span className="font-medium text-foreground">{batch.supplier_name || '—'}</span> • 
-            Received on <span className="text-foreground">{new Date(batch.created_at).toLocaleDateString()}</span>
+            Received on <span className="text-foreground">{formatDate(batch.date_received || batch.created_at)}</span>
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -116,6 +194,65 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
           <BatchActionsMenu batchId={batch.id} />
         </div>
       </div>
+
+      {/* Traceability Overview */}
+      <Card className="border-border shadow-sm bg-card">
+        <div className="p-4 border-b border-border bg-muted/10">
+          <h3 className="font-medium tracking-tight text-primary">Traceability Overview</h3>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-4">
+          <div className="space-y-2">
+            <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">Supplier</p>
+            <div className="space-y-1 text-sm">
+              <p className="font-medium text-foreground">{batch.suppliers?.name || '—'}</p>
+              <p className="text-muted-foreground">Contact: {batch.contact_person || batch.suppliers?.contact_name || '—'}</p>
+              <p className="text-muted-foreground">Phone: {batch.supplier_phone || batch.suppliers?.phone || '—'}</p>
+              <p className="text-muted-foreground">Email: {batch.suppliers?.email || '—'}</p>
+              <p className="text-muted-foreground">Location: {batch.supplier_location || batch.suppliers?.address || '—'}</p>
+              <p className="text-muted-foreground">Invoice: {batch.invoice_number || '—'}</p>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">Reception</p>
+            <div className="space-y-1 text-sm">
+              <p className="text-muted-foreground">Received: {formatDate(batch.date_received)}</p>
+              <p className="text-muted-foreground">Received By: {receivedByName}</p>
+              <p className="text-muted-foreground">Breed/Type: {batch.breed_type || '—'}</p>
+              <p className="text-muted-foreground">Quantity: {quantity.toLocaleString()}</p>
+              <p className="text-muted-foreground">Accepted: {inspectionAccepted.toLocaleString()}</p>
+              {batch.notes && (
+                <p className="text-muted-foreground">Notes: {batch.notes}</p>
+              )}
+            </div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">Inspection</p>
+            <div className="space-y-1 text-sm">
+              <p className="text-muted-foreground">Status: {inspectionStatus}</p>
+              <p className="text-muted-foreground">Completed: {formatDate(inspectionCompletedAt)}</p>
+              <p className="text-muted-foreground">Cracked: {inspectionCracked.toLocaleString()}</p>
+              <p className="text-muted-foreground">Dirty: {inspectionDirty.toLocaleString()}</p>
+              <p className="text-muted-foreground">Rejected: {inspectionRejected.toLocaleString()}</p>
+              <p className="text-muted-foreground">Photos: {photoAttachments.length}</p>
+              {inspectionNotes && (
+                <p className="text-muted-foreground">Notes: {inspectionNotes}</p>
+              )}
+            </div>
+          </div>
+          <div className="space-y-2">
+            <p className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">Assignment</p>
+            <div className="space-y-1 text-sm">
+              <p className="text-muted-foreground">Incubator: {incubatorName}{incubatorType ? ` (${incubatorType})` : ''}</p>
+              <p className="text-muted-foreground">Set Date: {formatDate(batch.set_date || assignment?.set_date)}</p>
+              <p className="text-muted-foreground">Est. Hatch: {formatDate(batch.expected_hatch_date || assignment?.expected_hatch_date)}</p>
+              <p className="text-muted-foreground">Status: {assignment?.status || '—'}</p>
+              {assignment?.assignment_notes && (
+                <p className="text-muted-foreground">Notes: {assignment.assignment_notes}</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </Card>
 
       {/* Production Economics Overlay Canvas */}
       <Card className="border-border shadow-md bg-card overflow-hidden">
@@ -219,28 +356,28 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
                   title="Setter Assignment"
                   date={batch.set_date || 'Pending'}
                   description="Eggs moved into Setter Bay to begin incubation."
-                  status={batch.status === 'RECEIVED' || batch.status === 'STORED' ? 'pending' : 'completed'}
+                  status={batch.status === 'LOGGED' ? 'pending' : 'completed'}
                 />
                 <TimelineEvent 
                   icon={<Eye className="w-5 h-5" />}
                   title="Candling & Viability Check"
                   date="Pending (Day 7)"
                   description="Mid-cycle fertility inspection. Infertile eggs must be recorded and removed."
-                  status={batch.quantity_culled !== null && batch.quantity_culled > 0 ? 'completed' : (batch.status === 'EARLY_INCUBATION' || batch.status === 'CANDLING') ? 'active' : 'pending'}
+                  status={batch.quantity_culled !== null && batch.quantity_culled > 0 ? 'completed' : (batch.status === 'SETTER') ? 'active' : 'pending'}
                 />
                 <TimelineEvent 
                   icon={<Settings className="w-5 h-5" />}
                   title="Lockdown"
                   date="Pending (Day 18)"
                   description="Eggs transferred to Lockdown."
-                  status={batch.status === 'LOCKDOWN' || batch.status === 'HATCHING' ? 'active' : (batch.status === 'COMPLETED' || batch.status === 'SOLD' || batch.status === 'ARCHIVED') ? 'completed' : 'pending'}
+                  status={batch.status === 'HATCHER' ? 'active' : (['COMPLETED', 'BROODER', 'FAILED', 'DISCARDED', 'CANCELLED'].includes(batch.status)) ? 'completed' : 'pending'}
                 />
                 <TimelineEvent 
                   icon={<HeartPulse className="w-5 h-5" />}
                   title="Hatch Completion"
                   date={batch.expected_hatch_date || 'Pending'}
                   description="Final chick count and hatchability recording."
-                  status={(batch.status === 'COMPLETED' || batch.status === 'SOLD' || batch.status === 'ARCHIVED') ? 'completed' : 'pending'}
+                  status={(batch.status === 'COMPLETED' || batch.status === 'BROODER') ? 'completed' : 'pending'}
                   isLast
                 />
               </div>
@@ -268,14 +405,89 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
                 <span className="text-sm font-semibold tabular-nums text-foreground">KES {(batch.transport_cost || 0).toLocaleString()}</span>
               </div>
               <div className="flex justify-between items-center">
+                <span className="text-xs font-medium text-muted-foreground">Loading / Offloading</span>
+                <span className="text-sm font-semibold tabular-nums text-foreground">KES {(batch.loading_offloading_cost || 0).toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between items-center">
                 <span className="text-xs font-medium text-muted-foreground">Misc Setup</span>
                 <span className="text-sm font-semibold tabular-nums text-foreground">KES {(batch.misc_initial_cost || 0).toLocaleString()}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-xs font-medium text-muted-foreground">Cost / Accepted Egg</span>
+                <span className="text-sm font-semibold tabular-nums text-foreground">
+                  KES {(batch.cost_per_accepted_egg || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </span>
               </div>
             </div>
             <div className="p-3 border-t border-border bg-muted/5 flex justify-between items-center">
               <span className="text-xs font-semibold tracking-wider text-muted-foreground uppercase">Base Total</span>
               <span className="text-sm font-bold text-foreground tabular-nums font-mono">KES {initialCost.toLocaleString()}</span>
             </div>
+          </Card>
+
+          <Card className="border-border shadow-sm bg-card overflow-hidden">
+            <div className="p-4 border-b border-border bg-muted/10 flex items-center justify-between">
+              <h3 className="font-medium tracking-tight text-primary text-sm">Acquisition Cost Items</h3>
+            </div>
+            <div className="divide-y divide-border/50">
+              {!acquisitionCosts || acquisitionCosts.length === 0 ? (
+                <div className="p-6 text-center">
+                  <p className="text-xs text-muted-foreground font-medium">No acquisition cost items recorded.</p>
+                </div>
+              ) : (
+                acquisitionCosts.map((cost) => (
+                  <div key={cost.id} className="p-3 flex items-center justify-between">
+                    <div className="text-xs font-semibold text-foreground">
+                      {cost.cost_type}
+                    </div>
+                    <div className="text-xs font-bold text-foreground tabular-nums">
+                      KES {Number(cost.amount || 0).toLocaleString()}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </Card>
+
+          <Card className="border-border shadow-sm bg-card overflow-hidden">
+            <div className="p-4 border-b border-border bg-muted/10">
+              <h3 className="font-medium tracking-tight text-primary text-sm">Inspection Photos</h3>
+            </div>
+            {photoAttachments.length === 0 ? (
+              <div className="p-6 text-center">
+                <p className="text-xs text-muted-foreground font-medium">No inspection photos uploaded.</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3 p-4">
+                {photoAttachments.map((photo) => {
+                  const url = photoUrls[photo.storage_path];
+                  return (
+                    <a
+                      key={photo.id}
+                      href={url || '#'}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="border border-border rounded-md overflow-hidden text-xs text-muted-foreground"
+                    >
+                      {url ? (
+                        <img
+                          src={url}
+                          alt={photo.file_name}
+                          className="w-full h-24 object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-24 flex items-center justify-center bg-muted">
+                          Unavailable
+                        </div>
+                      )}
+                      <div className="p-2 truncate" title={photo.file_name}>
+                        {photo.file_name}
+                      </div>
+                    </a>
+                  );
+                })}
+              </div>
+            )}
           </Card>
 
           <Card className="border-border shadow-sm bg-card overflow-hidden">
@@ -375,17 +587,15 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className={cn(
       "inline-flex items-center px-2 py-0.5 rounded-[4px] text-[11px] font-semibold tracking-wide uppercase border",
-      status === 'RECEIVED' && "bg-muted text-muted-foreground border-border",
-      status === 'STORED' && "bg-muted text-muted-foreground border-border",
-      status === 'EARLY_INCUBATION' && "bg-status-setter text-status-setter-text border-status-setter/50",
-      status === 'CANDLING' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
-      status === 'LOCKDOWN' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
-      status === 'HATCHING' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
+      status === 'LOGGED' && "bg-muted text-muted-foreground border-border",
+      status === 'SETTER' && "bg-status-setter text-status-setter-text border-status-setter/50",
+      status === 'HATCHER' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
+      status === 'BROODER' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
       status === 'COMPLETED' && "bg-status-completed text-status-completed-text border-status-completed/50",
-      status === 'SOLD' && "bg-status-completed text-status-completed-text border-status-completed/50",
-      status === 'ARCHIVED' && "bg-muted/50 text-muted-foreground border-border",
+      status === 'FAILED' && "bg-destructive/10 text-destructive border-destructive/20",
       status === 'DISCARDED' && "bg-destructive/10 text-destructive border-destructive/20",
-      !['RECEIVED', 'STORED', 'EARLY_INCUBATION', 'CANDLING', 'LOCKDOWN', 'HATCHING', 'COMPLETED', 'SOLD', 'ARCHIVED', 'DISCARDED'].includes(status) && "bg-muted text-muted-foreground border-border"
+      status === 'CANCELLED' && "bg-muted/50 text-muted-foreground border-border",
+      !['LOGGED', 'SETTER', 'HATCHER', 'BROODER', 'COMPLETED', 'FAILED', 'DISCARDED', 'CANCELLED'].includes(status) && "bg-muted text-muted-foreground border-border"
     )}>
       {status}
     </span>

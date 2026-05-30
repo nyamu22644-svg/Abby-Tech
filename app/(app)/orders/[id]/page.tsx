@@ -54,7 +54,8 @@ export default async function OrderDetailsPage({ params }: { params: Promise<{ i
     .from('egg_batches')
     .select('id, batch_number, quantity_hatched, quantity_received, quantity_culled, mortality_count, status')
     .not('status', 'eq', 'DISCARDED')
-    .not('status', 'eq', 'ARCHIVED');
+    .not('status', 'eq', 'FAILED')
+    .not('status', 'eq', 'CANCELLED');
 
   const { data: allocations } = await supabase
     .from('orders')
@@ -70,7 +71,7 @@ export default async function OrderDetailsPage({ params }: { params: Promise<{ i
 
   const availableBatches = (batches || []).map(b => {
     const projectedLoss = (b.quantity_culled || 0) + (b.mortality_count || 0)
-    const baseQuantity = ['COMPLETED', 'SOLD', 'STORED'].includes(b.status) ? (b.quantity_hatched || 0) : ((b.quantity_received || 0) - projectedLoss)
+    const baseQuantity = ['COMPLETED', 'BROODER'].includes(b.status) ? (b.quantity_hatched || 0) : ((b.quantity_received || 0) - projectedLoss)
     return {
       id: b.id,
       batch_number: b.batch_number,

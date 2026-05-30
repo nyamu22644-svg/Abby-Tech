@@ -3,6 +3,7 @@
 import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
+import { logOrderCreated, logOrderPaymentReceived, logOrderBatchAllocated } from '@/lib/audit'
 
 const createOrderSchema = z.object({
   customer_name: z.string().min(1, 'Customer name is required'),
@@ -125,10 +126,15 @@ export async function updateOrderStatus(id: string, status: string, additionalUp
 export async function deleteOrder(id: string) {
   const supabase = await createClient()
 
+  // Soft delete: set deleted_at instead of hard delete
   const { error } = await supabase
     .from('orders')
-    .delete()
+    .update({
+      deleted_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    })
     .eq('id', id)
+    .is('deleted_at', null)
 
   if (error) {
     return { success: false, error: 'Failed to delete order' }
@@ -156,7 +162,7 @@ export async function allocateOrder(orderId: string, batchId: string) {
   
   // Calculate projected available: received - culled - mortality
   const projectedLoss = (batch.quantity_culled || 0) + (batch.mortality_count || 0)
-  const baseQuantity = batch.status === 'COMPLETED' || batch.status === 'SOLD' ? (batch.quantity_hatched || 0) : ((batch.quantity_received || 0) - projectedLoss)
+  const baseQuantity = ['COMPLETED', 'BROODER'].includes(batch.status) ? (batch.quantity_hatched || 0) : ((batch.quantity_received || 0) - projectedLoss)
   const available = baseQuantity - currentAllocated;
 
   if (order.quantity > available) {
@@ -176,6 +182,9 @@ export async function allocateOrder(orderId: string, batchId: string) {
   if (error) {
     return { success: false, error: error.message || 'Failed to allocate order' }
   }
+
+  // Log batch allocation via audit system
+  await logOrderBatchAllocated(orderId, batchId, order.quantity)
 
   await supabase.from('order_audit_logs').insert({
     order_id: orderId,
@@ -229,6 +238,9 @@ export async function recordPayment(id: string, amount: number) {
   if (error) {
     return { success: false, error: error.message || 'Failed to record payment' }
   }
+
+  // Log payment via audit system
+  await logOrderPaymentReceived(id, amount, currentBalance, newBalance)
 
   await supabase.from('order_audit_logs').insert({
     order_id: id,

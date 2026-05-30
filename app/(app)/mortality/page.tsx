@@ -10,7 +10,7 @@ export default async function MortalityDashboard() {
   const { data: batches } = await supabase
     .from('egg_batches')
     .select('id, batch_number')
-    .in('status', ['RECEIVED', 'STORED', 'EARLY_INCUBATION', 'CANDLING', 'LOCKDOWN', 'HATCHING'])
+    .in('status', ['LOGGED', 'SETTER', 'HATCHER', 'BROODER'])
     .order('created_at', { ascending: false })
 
   // Fetch recent mortality events

@@ -1,31 +1,52 @@
-import React from 'react';
-import { Metadata } from 'next';
+'use client'
+
+import React, { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Search, Filter, Egg, Activity, CheckCircle2 } from 'lucide-react';
-import { createClient } from '@/lib/supabase/server';
-import { CreateBatchDialog } from './components/create-batch-dialog';
-import { BatchActionsMenu } from './components/batch-actions-menu';
+import { Search, Filter, Egg, Activity, CheckCircle2, Plus, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import type { Database } from '@/types/database.types'
+import { BatchCreationWizard } from './components/batch-creation-wizard';
+import { BatchActionsMenu } from './components/batch-actions-menu';
+import { createClient } from '@/lib/supabase/client';
 
-export const metadata: Metadata = {
-  title: 'Egg Batches | Smart Hatchery OS',
-  description: 'Manage incubation batches and hatchery workflow.',
-};
+export default function EggBatchesPage() {
+  const [batches, setBatches] = useState<any[]>([])
+  const [loading, setLoading] = useState(true)
+  const [wizardOpen, setWizardOpen] = useState(false)
 
-export default async function EggBatchesPage() {
-  const supabase = await createClient();
-  const { data: batches, error } = await supabase
-    .from('egg_batches')
-    .select('*')
-    .order('created_at', { ascending: false });
+  useEffect(() => {
+    const fetchBatches = async () => {
+      const supabase = createClient()
+      const { data, error } = await supabase
+        .from('egg_batches')
+        .select('*, suppliers(name)')
+        .is('deleted_at', null)
+        .order('created_at', { ascending: false })
+
+      if (data) {
+        setBatches(data)
+      }
+      setLoading(false)
+    }
+
+    fetchBatches()
+  }, [])
 
   const displayBatches = batches || [];
 
-  const activeSetters = displayBatches.filter(b => b.status === 'EARLY_INCUBATION' || b.status === 'CANDLING').length;
-  const activeHatchers = displayBatches.filter(b => b.status === 'LOCKDOWN' || b.status === 'HATCHING').length;
-  const totalVolume = displayBatches.reduce((acc, b) => acc + (b.status !== 'DISCARDED' && b.status !== 'COMPLETED' ? (b.quantity_received || 0) : 0), 0);
+  const activeSetters = displayBatches.filter(b => b.status === 'SETTER').length;
+  const activeHatchers = displayBatches.filter(b => b.status === 'HATCHER').length;
+  const totalVolume = displayBatches.reduce(
+    (acc, b) => acc + (!['DISCARDED', 'COMPLETED', 'FAILED', 'CANCELLED'].includes(b.status) ? (b.quantity_received || 0) : 0),
+    0
+  );
+
+  const formatDate = (value?: string | null) => {
+    if (!value) return '—'
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? '—' : parsed.toLocaleDateString()
+  }
 
   return (
     <div className="space-y-6 animate-in fade-in zoom-in-95 duration-200">
@@ -43,7 +64,13 @@ export default async function EggBatchesPage() {
             <Filter className="h-4 w-4" />
             Filter View
           </Button>
-          <CreateBatchDialog />
+          <Button 
+            onClick={() => setWizardOpen(true)}
+            className="gap-2 h-9 px-4 rounded-md font-medium bg-primary hover:bg-primary/90 text-primary-foreground shadow-sm"
+          >
+            <Plus className="h-4 w-4" />
+            New Batch
+          </Button>
         </div>
       </div>
 
@@ -104,42 +131,62 @@ export default async function EggBatchesPage() {
               <tr>
                 <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase">Batch ID</th>
                 <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase">Supplier</th>
-                <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase text-right">Volume</th>
-                <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase">State</th>
+                <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase text-right">Received</th>
+                <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase text-right">Accepted</th>
+                <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase">Inspection</th>
                 <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase">Set Date</th>
                 <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase">Est. Hatch</th>
+                <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase">State</th>
                 <th className="px-5 py-3.5 tracking-tight font-medium text-[13px] uppercase text-right">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-card">
-              {displayBatches.length === 0 ? (
+              {loading ? (
                 <tr>
-                  <td colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
+                  <td colSpan={9} className="px-5 py-8 text-center text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
+                    Loading batches...
+                  </td>
+                </tr>
+              ) : displayBatches.length === 0 ? (
+                <tr>
+                  <td colSpan={9} className="px-5 py-8 text-center text-muted-foreground">
                     No egg batches found. Create a new batch to track inventory.
                   </td>
                 </tr>
               ) : displayBatches.map((batch: any) => (
                 <tr key={batch.id} className="hover:bg-muted/30 transition-colors group">
                   <td className="px-5 py-3.5 font-mono text-[13px] text-primary whitespace-nowrap">
-                    {batch.batch_number}
+                    <Link href={`/batches/${batch.id}`} className="hover:underline">
+                      {batch.batch_number}
+                    </Link>
                   </td>
-                  <td className="px-5 py-3.5 text-secondary-foreground font-medium whitespace-nowrap">
-                    {batch.supplier_name || '—'}
+                  <td className="px-5 py-3.5 text-muted-foreground font-medium">
+                    {batch.suppliers?.name || batch.contact_person || '—'}
                   </td>
                   <td className="px-5 py-3.5 text-primary tracking-tight font-medium text-right tabular-nums">
                     {batch.quantity_received?.toLocaleString()}
                   </td>
+                  <td className="px-5 py-3.5 text-primary tracking-tight font-medium text-right tabular-nums">
+                    {(batch.accepted_eggs ?? '—') === '—' ? '—' : Number(batch.accepted_eggs).toLocaleString()}
+                  </td>
+                  <td className="px-5 py-3.5 text-muted-foreground font-medium whitespace-nowrap">
+                    {batch.inspection_status || 'PENDING'}
+                  </td>
+                  <td className="px-5 py-3.5 text-muted-foreground font-medium whitespace-nowrap tabular-nums">
+                    {formatDate(batch.set_date)}
+                  </td>
+                  <td className="px-5 py-3.5 text-muted-foreground font-medium whitespace-nowrap tabular-nums">
+                    {formatDate(batch.expected_hatch_date)}
+                  </td>
                   <td className="px-5 py-3.5">
                     <StatusBadge status={batch.status} />
                   </td>
-                  <td className="px-5 py-3.5 text-muted-foreground font-medium whitespace-nowrap tabular-nums">
-                    {batch.set_date || '—'}
-                  </td>
-                  <td className="px-5 py-3.5 text-muted-foreground font-medium whitespace-nowrap tabular-nums">
-                    {batch.expected_hatch_date || '—'}
-                  </td>
                   <td className="px-5 py-3.5 text-right w-14">
-                    <BatchActionsMenu batchId={batch.id} />
+                    <BatchActionsMenu 
+                      batchId={batch.id} 
+                      onDelete={() => setBatches(batches.filter(b => b.id !== batch.id))}
+                    />
                   </td>
                 </tr>
               ))}
@@ -147,6 +194,12 @@ export default async function EggBatchesPage() {
           </table>
         </div>
       </Card>
+
+      {/* Batch Creation Wizard Modal */}
+      <BatchCreationWizard 
+        isOpen={wizardOpen}
+        onClose={() => setWizardOpen(false)}
+      />
     </div>
   );
 }
@@ -155,17 +208,15 @@ function StatusBadge({ status }: { status: string }) {
   return (
     <span className={cn(
       "inline-flex items-center px-2 py-0.5 rounded-[4px] text-[11px] font-semibold tracking-wide uppercase border",
-      status === 'RECEIVED' && "bg-muted text-muted-foreground border-border",
-      status === 'STORED' && "bg-muted text-muted-foreground border-border",
-      status === 'EARLY_INCUBATION' && "bg-status-setter text-status-setter-text border-status-setter/50",
-      status === 'CANDLING' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
-      status === 'LOCKDOWN' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
-      status === 'HATCHING' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
+      status === 'LOGGED' && "bg-muted text-muted-foreground border-border",
+      status === 'SETTER' && "bg-status-setter text-status-setter-text border-status-setter/50",
+      status === 'HATCHER' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
+      status === 'BROODER' && "bg-status-hatcher text-status-hatcher-text border-status-hatcher/50",
       status === 'COMPLETED' && "bg-status-completed text-status-completed-text border-status-completed/50",
-      status === 'SOLD' && "bg-status-completed text-status-completed-text border-status-completed/50",
-      status === 'ARCHIVED' && "bg-muted/50 text-muted-foreground border-border",
+      status === 'FAILED' && "bg-destructive/10 text-destructive border-destructive/20",
       status === 'DISCARDED' && "bg-destructive/10 text-destructive border-destructive/20",
-      !['RECEIVED', 'STORED', 'EARLY_INCUBATION', 'CANDLING', 'LOCKDOWN', 'HATCHING', 'COMPLETED', 'SOLD', 'ARCHIVED', 'DISCARDED'].includes(status) && "bg-muted text-muted-foreground border-border"
+      status === 'CANCELLED' && "bg-muted/50 text-muted-foreground border-border",
+      !['LOGGED', 'SETTER', 'HATCHER', 'BROODER', 'COMPLETED', 'FAILED', 'DISCARDED', 'CANCELLED'].includes(status) && "bg-muted text-muted-foreground border-border"
     )}>
       {status}
     </span>

@@ -10,8 +10,8 @@ export const metadata: Metadata = {
 
 export default async function DashboardPage() {
   const supabase = await createClient();
-  const { count: activeSetters } = await supabase.from('egg_batches').select('*', { count: 'exact', head: true }).in('status', ['EARLY_INCUBATION', 'CANDLING', 'LOCKDOWN']);
-  const { count: activeHatchers } = await supabase.from('egg_batches').select('*', { count: 'exact', head: true }).in('status', ['LOCKDOWN', 'HATCHING']);
+  const { count: activeSetters } = await supabase.from('egg_batches').select('*', { count: 'exact', head: true }).in('status', ['SETTER']);
+  const { count: activeHatchers } = await supabase.from('egg_batches').select('*', { count: 'exact', head: true }).in('status', ['HATCHER']);
   
   return (
     <div className="space-y-6 animate-in fade-in zoom-in-95 duration-200">
@@ -62,10 +62,9 @@ export default async function DashboardPage() {
             <Wind className="w-4 h-4" />
           </div>
           <div className="space-y-1">
-            <span className="text-3xl font-semibold text-primary tabular-nums">84.2%</span>
-            <div className="flex items-center text-xs font-medium text-destructive">
-              <ArrowDownRight className="w-3 h-3 mr-1" />
-              <span>-1.2% from last cycle</span>
+            <span className="text-3xl font-semibold text-primary tabular-nums">—</span>
+            <div className="flex items-center text-xs font-medium text-muted-foreground">
+              <span>No live data</span>
             </div>
           </div>
         </Card>
@@ -86,7 +85,7 @@ export default async function DashboardPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Main Telemetry Chart Area (Placeholder for structure) */}
+        {/* Main Telemetry Chart Area */}
         <Card className="lg:col-span-2 border-border shadow-sm bg-card flex flex-col">
           <div className="p-5 border-b border-border flex items-center justify-between">
             <h3 className="font-medium tracking-tight text-primary">Setter Bay Telemetry</h3>
@@ -96,46 +95,9 @@ export default async function DashboardPage() {
             </span>
           </div>
           <div className="p-5 flex-1 min-h-[300px] flex items-center justify-center border-b border-border/50 bg-muted/10">
-            {/* We can use recharts here if requested, but for now we'll put a structured placeholder */}
             <div className="text-center space-y-2">
               <Zap className="mx-auto h-8 w-8 text-muted-foreground/50" />
-              <p className="text-sm text-muted-foreground font-medium">Connecting to generic telemetry visualizers...</p>
-            </div>
-          </div>
-          <div className="grid grid-cols-3 divide-x divide-border">
-            <div className="p-4 text-center">
-              <p className="text-xs font-medium text-muted-foreground mb-1 tracking-wider uppercase">Avg Temp</p>
-              <p className="text-lg font-semibold text-primary font-mono">37.5°C</p>
-            </div>
-            <div className="p-4 text-center">
-              <p className="text-xs font-medium text-muted-foreground mb-1 tracking-wider uppercase">Humidity</p>
-              <p className="text-lg font-semibold text-primary font-mono">75%</p>
-            </div>
-            <div className="p-4 text-center">
-              <p className="text-xs font-medium text-muted-foreground mb-1 tracking-wider uppercase">CO2 Level</p>
-              <p className="text-lg font-semibold text-primary font-mono">400ppm</p>
-            </div>
-          </div>
-        </Card>
-
-        {/* Recent Activity */}
-        <Card className="border-border shadow-sm bg-card">
-          <div className="p-5 border-b border-border">
-            <h3 className="font-medium tracking-tight text-primary">Recent Activity</h3>
-          </div>
-          <div className="p-0">
-            <div className="divide-y divide-border">
-              {[1, 2, 3, 4, 5].map((i) => (
-                <div key={i} className="p-4 flex gap-4 hover:bg-muted/30 transition-colors">
-                  <div className="mt-0.5 shrink-0">
-                    <div className="w-2 h-2 mt-1.5 rounded-full bg-status-setter border border-status-setter-text/30"></div>
-                  </div>
-                  <div>
-                    <p className="text-sm text-primary font-medium">Batch BCH-00{i} transferred to Hatcher Bay 2</p>
-                    <p className="text-xs text-muted-foreground mt-1">2 hours ago • Automated</p>
-                  </div>
-                </div>
-              ))}
+              <p className="text-sm text-muted-foreground font-medium">Telemetry visualizer - ready for data source</p>
             </div>
           </div>
         </Card>
