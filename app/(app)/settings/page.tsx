@@ -430,7 +430,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                   </select>
                 </Field>
               </div>
-              <div className="mt-4 grid gap-3 sm:grid-cols-3">
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
                 <Metric icon={Users} label="Accounts" value={Number(profileCount || 0).toLocaleString()} helper={user?.email || 'Current login'} />
                 <Metric icon={Lock} label="Signup" value="Closed" helper="No public account creation" />
                 <Metric icon={Shield} label="RLS" value="Enabled" helper="Authenticated access only" />
@@ -442,7 +442,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             <Section
               icon={Users}
               title="Invite Staff"
-              description="Creates a Supabase login invite, staff profile, and role assignment."
+              description="Sends a Supabase invite so the staff member can create a private password."
               action={<SaveButton label="Invite" />}
             >
               <div className="grid gap-3 sm:grid-cols-2">
@@ -467,7 +467,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
                 </Field>
               </div>
               <p className="mt-3 rounded-button border border-warning/20 bg-warning/10 px-3 py-2 text-xs text-muted-foreground">
-                Requires `SUPABASE_SERVICE_ROLE_KEY` on the server. Without it, Supabase Auth cannot create or invite login accounts.
+                The email link opens a password setup screen. Staff should create their own password, not use the manager password.
               </p>
             </Section>
           </form>
@@ -545,8 +545,8 @@ function Metric({
   helper: string
 }) {
   return (
-    <div className="rounded-button border border-border bg-muted/10 p-3">
-      <div className="flex items-center gap-2.5">
+    <div className="min-w-0 overflow-hidden rounded-button border border-border bg-muted/10 p-3">
+      <div className="flex items-start gap-2.5">
         <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-button bg-primary/10 text-primary">
           <Icon className="h-4 w-4" />
         </span>
@@ -555,7 +555,7 @@ function Metric({
           <p className="truncate text-sm font-semibold text-foreground">{value}</p>
         </div>
       </div>
-      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{helper}</p>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{helper}</p>
     </div>
   )
 }

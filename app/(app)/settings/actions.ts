@@ -348,7 +348,7 @@ export async function inviteStaffMember(formData: FormData) {
         tenant_id: tenantId,
         role_code: parsed.data.role_code,
       },
-      redirectTo: `${process.env.APP_URL || ''}/login`,
+      redirectTo: `${process.env.APP_URL || ''}/auth/callback?next=/auth/set-password`,
     })
 
     if (error) redirectWithError(error.message || 'Failed to send staff invite.')
