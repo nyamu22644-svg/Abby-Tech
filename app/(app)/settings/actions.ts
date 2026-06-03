@@ -145,11 +145,13 @@ export async function saveReceiptBranding(formData: FormData) {
   const { tenantId } = await ensureTenantForUser(supabase)
   const db = supabase as any
   const data = parsed.data
+  const settingsBase = await getBusinessSettingsUpsertBase(db, tenantId)
 
   const { error } = await db
     .from('business_settings')
     .upsert(
       {
+        ...settingsBase,
         tenant_id: tenantId,
         receipt_title: data.receipt_title || null,
         receipt_tagline: data.receipt_tagline || null,
@@ -178,6 +180,7 @@ export async function saveBreedCatalog(formData: FormData) {
   const supabase = await createClient()
   const { tenantId } = await ensureTenantForUser(supabase)
   const db = supabase as any
+  const settingsBase = await getBusinessSettingsUpsertBase(db, tenantId)
   const breeds = (parsed.data.breed_options || '')
     .split(/\r?\n/)
     .map((value) => value.trim())
@@ -188,6 +191,7 @@ export async function saveBreedCatalog(formData: FormData) {
     .from('business_settings')
     .upsert(
       {
+        ...settingsBase,
         tenant_id: tenantId,
         breed_options: breeds,
         updated_at: new Date().toISOString(),
@@ -573,6 +577,38 @@ async function ensureDefaultRole(db: any, tenantId: string, roleCode: 'MANAGER' 
 
   if (createError || !created?.id) redirectWithError(createError?.message || `Failed to create ${roleName} role.`)
   return created
+}
+
+async function getBusinessSettingsUpsertBase(db: any, tenantId: string) {
+  const { data: existing, error: settingsError } = await db
+    .from('business_settings')
+    .select('business_name, timezone, currency_code')
+    .eq('tenant_id', tenantId)
+    .maybeSingle()
+
+  if (settingsError) redirectWithError(settingsError.message || 'Failed to read facility settings.')
+
+  if (existing?.business_name) {
+    return {
+      business_name: existing.business_name,
+      timezone: existing.timezone || 'Africa/Nairobi',
+      currency_code: existing.currency_code || 'KES',
+    }
+  }
+
+  const { data: tenant, error: tenantError } = await db
+    .from('tenants')
+    .select('name, timezone, currency_code')
+    .eq('id', tenantId)
+    .maybeSingle()
+
+  if (tenantError) redirectWithError(tenantError.message || 'Failed to read facility record.')
+
+  return {
+    business_name: tenant?.name || 'Abbye Chicks Hatchery',
+    timezone: tenant?.timezone || 'Africa/Nairobi',
+    currency_code: tenant?.currency_code || 'KES',
+  }
 }
 
 function revalidateSettings() {
