@@ -13,7 +13,7 @@ import {
   getSearchParams,
   paginatedResponse,
 } from '@/lib/api-response';
-import { requireRole } from '@/lib/rbac';
+import { requireRole } from '@/lib/auth';
 import { requireAuth } from '@/lib/auth';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
 import { logOrderCreated } from '@/lib/audit';
@@ -22,10 +22,9 @@ const createOrderSchema = z.object({
   customer_name: z.string().min(1, 'Customer name is required'),
   customer_phone: z.string().optional(),
   location: z.string().optional(),
-  business_name: z.string().optional(),
   quantity: z.number().int().positive('Quantity must be > 0'),
   price_per_chick: z.number().min(0).default(130),
-  expected_hatch_date: z.string().datetime().optional(),
+  expected_hatch_date: z.string().optional(),
   notes: z.string().optional(),
 });
 
@@ -34,11 +33,12 @@ export const GET = apiHandler(async (req: NextRequest) => {
 
   const user = await requireAuth();
   const supabase = await createClient();
+  const db = supabase as any;
   const params = getSearchParams(req);
 
-  let query = supabase
+  let query = db
     .from('orders')
-    .select('*', { count: 'exact' })
+    .select('*, customers(name, phone, address, city, country), order_items(id, batch_id, quantity, unit_price, total_price, status)', { count: 'exact' })
     .is('deleted_at', null)
     .order(params.sort === 'created_at' ? 'created_at' : 'order_number', {
       ascending: params.order === 'asc',
@@ -68,11 +68,12 @@ export const POST = apiHandler(async (req: NextRequest) => {
   const validatedData = createOrderSchema.parse(body);
 
   const supabase = await createClient();
+  const db = supabase as any;
 
   // Try to find or create customer
   let customerId = null;
   if (validatedData.customer_phone) {
-    const { data: existingPhone } = await supabase
+    const { data: existingPhone } = await db
       .from('customers')
       .select('id')
       .eq('phone', validatedData.customer_phone)
@@ -82,7 +83,7 @@ export const POST = apiHandler(async (req: NextRequest) => {
   }
 
   if (!customerId) {
-    const { data: existingName } = await supabase
+    const { data: existingName } = await db
       .from('customers')
       .select('id')
       .eq('name', validatedData.customer_name)
@@ -92,13 +93,12 @@ export const POST = apiHandler(async (req: NextRequest) => {
   }
 
   if (!customerId) {
-    const { data: newCust, error: custErr } = await supabase
+    const { data: newCust, error: custErr } = await db
       .from('customers')
       .insert({
         name: validatedData.customer_name,
         phone: validatedData.customer_phone || null,
-        location: validatedData.location || null,
-        business_name: validatedData.business_name || null,
+        address: validatedData.location || null,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
@@ -110,28 +110,30 @@ export const POST = apiHandler(async (req: NextRequest) => {
     }
   }
 
+  if (!customerId) {
+    throw new ApiError(ERROR_CODES.INTERNAL_ERROR, 'Failed to create or find customer', 500);
+  }
+
   const order_number = `ORD-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000)
     .toString()
     .padStart(4, '0')}`;
 
   const total_amount = validatedData.quantity * validatedData.price_per_chick;
 
-  const { data: newOrder, error } = await supabase
+  const { data: newOrder, error } = await db
     .from('orders')
     .insert({
       order_number,
-      customer_name: validatedData.customer_name,
-      customer_phone: validatedData.customer_phone || null,
       customer_id: customerId,
-      quantity: validatedData.quantity,
-      price_per_chick: validatedData.price_per_chick,
+      total_quantity: validatedData.quantity,
+      subtotal_amount: total_amount,
       total_amount,
       balance_due: total_amount,
       amount_paid: 0,
       status: 'INQUIRY',
-      payment_status: 'UNPAID',
+      payment_status: 'PENDING',
       dispatch_status: 'PENDING',
-      expected_hatch_date: validatedData.expected_hatch_date || null,
+      required_by_date: validatedData.expected_hatch_date || null,
       notes: validatedData.notes || null,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
@@ -141,6 +143,21 @@ export const POST = apiHandler(async (req: NextRequest) => {
 
   if (error) {
     throw new ApiError(ERROR_CODES.INTERNAL_ERROR, error.message, 500);
+  }
+
+  const { error: itemError } = await db.from('order_items').insert({
+    order_id: newOrder.id,
+    description: 'Day-old chicks',
+    quantity: validatedData.quantity,
+    unit_price: validatedData.price_per_chick,
+    total_price: total_amount,
+    status: 'UNALLOCATED',
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  if (itemError) {
+    throw new ApiError(ERROR_CODES.INTERNAL_ERROR, itemError.message, 500);
   }
 
   await logOrderCreated(newOrder.id, validatedData);

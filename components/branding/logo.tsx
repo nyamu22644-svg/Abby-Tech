@@ -89,10 +89,10 @@ export function AbbytechLogo({ size = 'md', className = '', showText = true, var
       {showText && (
         <div className="flex flex-col">
           <div className={`font-bold text-lg tracking-tight ${variant === 'dark' ? 'text-white' : 'text-slate-950'}`}>
-            Abby Tech
+            Abbye Chicks
           </div>
           <div className={`text-xs font-medium ${variant === 'dark' ? 'text-blue-300' : 'text-slate-500'} tracking-wide uppercase`}>
-            Operational
+            Hatchery OS
           </div>
         </div>
       )}

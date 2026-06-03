@@ -3,6 +3,8 @@
 
 import { UserRole, ROLE_PERMISSIONS, ApiError, ERROR_CODES } from '@/types/security.types';
 
+type PermissionKey = 'canCreate' | 'canRead' | 'canUpdate' | 'canDelete';
+
 /**
  * Check if a role has permission to perform an action on a resource
  */
@@ -14,7 +16,13 @@ export function hasPermission(
   if (!role) return false;
 
   const permissions = ROLE_PERMISSIONS[role];
-  const actionKey = `can${action.charAt(0).toUpperCase()}${action.slice(1)}` as const;
+  const actionKeys: Record<typeof action, PermissionKey> = {
+    create: 'canCreate',
+    read: 'canRead',
+    update: 'canUpdate',
+    delete: 'canDelete',
+  };
+  const actionKey = actionKeys[action];
 
   return permissions[actionKey].includes(resource);
 }

@@ -23,7 +23,12 @@ export function GlassmorphicLoginForm() {
 
   // Online status detection
   useEffect(() => {
-    setIsOnline(navigator.onLine)
+    let cancelled = false
+    const frame = window.requestAnimationFrame(() => {
+      if (cancelled) return
+      setEmail(localStorage.getItem('rememberedEmail') || '')
+      setIsOnline(navigator.onLine)
+    })
 
     const handleOnline = () => setIsOnline(true)
     const handleOffline = () => setIsOnline(false)
@@ -32,6 +37,8 @@ export function GlassmorphicLoginForm() {
     window.addEventListener('offline', handleOffline)
 
     return () => {
+      cancelled = true
+      window.cancelAnimationFrame(frame)
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
@@ -97,13 +104,6 @@ export function GlassmorphicLoginForm() {
     [email, password, rememberMe, isFormValid, router]
   )
 
-  useEffect(() => {
-    const remembered = localStorage.getItem('rememberedEmail')
-    if (remembered) {
-      setEmail(remembered)
-    }
-  }, [])
-
   return (
     <div className="w-full max-w-sm space-y-6">
       {/* Card with glassmorphism */}
@@ -115,10 +115,10 @@ export function GlassmorphicLoginForm() {
           {/* Header */}
           <div className="space-y-2 text-center mb-8">
             <h1 className="text-2xl font-bold tracking-tight bg-gradient-to-r from-blue-300 via-cyan-300 to-emerald-300 bg-clip-text text-transparent">
-              Operational Access
+              Hatchery Access
             </h1>
             <p className="text-sm text-slate-400">
-              Smart Hatchery Intelligence System
+              Abbye Chicks operations console
             </p>
           </div>
 
@@ -187,7 +187,7 @@ export function GlassmorphicLoginForm() {
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => handlePasswordChange(e.target.value)}
-                  placeholder="••••••••••••"
+                  placeholder="************"
                   required
                   disabled={loading}
                   className="w-full px-4 py-3 rounded-lg bg-white/5 border border-white/10 text-white placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500/50 focus:border-blue-500/50 transition-all disabled:opacity-50 disabled:cursor-not-allowed group-hover:border-white/20"
@@ -236,7 +236,7 @@ export function GlassmorphicLoginForm() {
                   </>
                 ) : (
                   <>
-                    <span>Access Hatchery Operations</span>
+                    <span>Open Operations Console</span>
                     <ArrowRight className="h-4 w-4 group-hover:translate-x-0.5 transition" />
                   </>
                 )}
@@ -254,7 +254,7 @@ export function GlassmorphicLoginForm() {
 
       {/* Footer */}
       <div className="text-center">
-        <p className="text-xs text-slate-500">Operational System • Enterprise Edition v1.0</p>
+        <p className="text-xs text-slate-500">Abbye Chicks - Premium Hatchery OS v1.0</p>
       </div>
     </div>
   )

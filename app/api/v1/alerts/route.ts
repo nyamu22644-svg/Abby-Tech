@@ -1,29 +1,23 @@
 // API: GET /api/v1/alerts - List alerts with filtering
-// API: PATCH /api/v1/alerts/[id] - Update alert status
 
 import { type NextRequest } from 'next/server';
-import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import {
-  successResponse,
   apiHandler,
   validateMethod,
-  getJsonBody,
   getSearchParams,
   paginatedResponse,
 } from '@/lib/api-response';
-import { requireRole, requireAuth } from '@/lib/rbac';
+import { requireAuth } from '@/lib/auth';
+import { syncLifecycleAlerts } from '@/lib/alerts/lifecycle-alerts';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
-
-const updateAlertSchema = z.object({
-  status: z.enum(['ACTIVE', 'ACKNOWLEDGED', 'RESOLVED']),
-});
 
 export const GET = apiHandler(async (req: NextRequest) => {
   validateMethod(req, ['GET']);
 
   const user = await requireAuth();
   const supabase = await createClient();
+  await syncLifecycleAlerts(supabase);
   const params = getSearchParams(req);
 
   // Get filters
@@ -33,7 +27,7 @@ export const GET = apiHandler(async (req: NextRequest) => {
   const incubatorId = req.nextUrl.searchParams.get('incubator_id');
 
   let query = supabase
-    .from('incubation_alerts')
+    .from('alert_events')
     .select('*', { count: 'exact' })
     .order('triggered_at', { ascending: false })
     .range(params.offset, params.offset + params.limit - 1);
@@ -68,41 +62,3 @@ export const GET = apiHandler(async (req: NextRequest) => {
     200
   );
 });
-
-// Patch individual alert
-export async function patchAlert(req: NextRequest, props: any) {
-  validateMethod(req, ['PATCH']);
-
-  const user = await requireRole('MANAGER');
-  const alertId = props.params.id;
-
-  if (!alertId) {
-    throw new ApiError(ERROR_CODES.VALIDATION_ERROR, 'Alert ID is required', 400);
-  }
-
-  const body = await getJsonBody(req);
-  const validatedData = updateAlertSchema.parse(body);
-
-  const supabase = await createClient();
-
-  const { data: updatedAlert, error } = await supabase
-    .from('incubation_alerts')
-    .update({
-      status: validatedData.status,
-      ...(validatedData.status === 'RESOLVED' && {
-        resolved_at: new Date().toISOString(),
-        resolved_by: user.id,
-      }),
-    })
-    .eq('id', alertId)
-    .select()
-    .single();
-
-  if (error || !updatedAlert) {
-    throw new ApiError(ERROR_CODES.NOT_FOUND, 'Alert not found', 404);
-  }
-
-  return successResponse(updatedAlert, 200);
-}
-
-export const PATCH = apiHandler(patchAlert);

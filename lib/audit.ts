@@ -13,6 +13,49 @@ interface AuditLogInput {
   metadata?: Record<string, any>;
 }
 
+function serializeAuditValue(value: unknown): string | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'string') return value;
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function buildAuditChanges(input: AuditLogInput, auditLogId: string) {
+  const rows: Array<{
+    audit_log_id: string;
+    field_name: string;
+    old_value: string | null;
+    new_value: string | null;
+  }> = [];
+
+  const previousValues = input.previousValues || {};
+  const newValues = input.newValues || {};
+  const valueKeys = new Set([...Object.keys(previousValues), ...Object.keys(newValues)]);
+
+  valueKeys.forEach((key) => {
+    rows.push({
+      audit_log_id: auditLogId,
+      field_name: key,
+      old_value: serializeAuditValue(previousValues[key]),
+      new_value: serializeAuditValue(newValues[key]),
+    });
+  });
+
+  Object.entries(input.metadata || {}).forEach(([key, value]) => {
+    rows.push({
+      audit_log_id: auditLogId,
+      field_name: `metadata.${key}`,
+      old_value: null,
+      new_value: serializeAuditValue(value),
+    });
+  });
+
+  return rows;
+}
+
 /**
  * Log an operational action to the audit table
  * Should be called after any mutation (create, update, delete)
@@ -22,17 +65,23 @@ export async function logAudit(input: AuditLogInput): Promise<AuditLog | null> {
     const supabase = await createClient();
 
     const { data: { user } } = await supabase.auth.getUser();
+    const { data: profile } = user
+      ? await supabase
+          .from('user_profiles')
+          .select('tenant_id')
+          .eq('id', user.id)
+          .maybeSingle()
+      : { data: null };
 
     const { data, error } = await supabase
       .from('audit_logs')
       .insert({
+        tenant_id: (profile as any)?.tenant_id || null,
         entity_type: input.entityType,
         entity_id: input.entityId,
         action: input.action,
         performed_by: user?.id || null,
-        previous_values: input.previousValues || null,
-        new_values: input.newValues || null,
-        metadata: input.metadata || null,
+        performed_at: new Date().toISOString(),
         created_at: new Date().toISOString(),
       })
       .select()
@@ -43,7 +92,18 @@ export async function logAudit(input: AuditLogInput): Promise<AuditLog | null> {
       return null;
     }
 
-    return data;
+    const changes = buildAuditChanges(input, data.id);
+    if (changes.length > 0) {
+      const { error: changesError } = await supabase
+        .from('audit_log_changes')
+        .insert(changes);
+
+      if (changesError) {
+        console.error('Audit change logging error:', changesError);
+      }
+    }
+
+    return { ...data, changes } as AuditLog;
   } catch (err) {
     console.error('Unexpected audit logging error:', err);
     return null;
@@ -118,6 +178,23 @@ export async function logOrderCreated(orderId: string, orderData: any) {
     metadata: {
       resource: 'orders',
       operation: 'create',
+    },
+  });
+}
+
+/**
+ * Log order update with before/after values
+ */
+export async function logOrderUpdated(orderId: string, previousData: any, newData: any) {
+  return logAudit({
+    entityType: 'order',
+    entityId: orderId,
+    action: 'UPDATE',
+    previousValues: previousData,
+    newValues: newData,
+    metadata: {
+      resource: 'orders',
+      operation: 'update',
     },
   });
 }
@@ -246,7 +323,7 @@ export async function logAlertTriggered(
     action: 'ALERT_TRIGGERED',
     newValues: { severity, title, description },
     metadata: {
-      resource: 'incubation_alerts',
+      resource: 'alert_events',
       operation: 'alert_triggered',
       severity,
       timestamp: new Date().toISOString(),
@@ -269,7 +346,7 @@ export async function logOperationalCostAdded(
     action: 'CREATE',
     newValues: { batch_id: batchId, amount, category },
     metadata: {
-      resource: 'operational_costs',
+      resource: 'cost_entries',
       operation: 'cost_added',
       amount,
       category,

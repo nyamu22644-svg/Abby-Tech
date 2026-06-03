@@ -1,11 +1,12 @@
 'use client'
 
-import { useState, useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Card } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Card } from '@/components/ui/card'
-import { AlertCircle } from 'lucide-react'
+import { cn } from '@/lib/utils'
 import type { BatchFinancialCosts } from '@/types/batch-workflow.types'
 
 interface FinancialCostsStepProps {
@@ -25,12 +26,7 @@ export function FinancialCostsStep({
   const [errors, setErrors] = useState<Record<string, string>>({})
 
   const totals = useMemo(() => {
-    const total = (
-      data.eggPurchaseCost +
-      data.transportCost +
-      data.loadingOffloadingCost +
-      data.miscellaneousCost
-    )
+    const total = data.eggPurchaseCost + data.transportCost + data.loadingOffloadingCost + data.miscellaneousCost
     const perEgg = acceptedEggs > 0 ? total / acceptedEggs : 0
     return { total, perEgg }
   }, [data, acceptedEggs])
@@ -42,17 +38,14 @@ export function FinancialCostsStep({
     if (data.transportCost < 0) newErrors.transportCost = 'Cannot be negative'
     if (data.loadingOffloadingCost < 0) newErrors.loadingOffloadingCost = 'Cannot be negative'
     if (data.miscellaneousCost < 0) newErrors.miscellaneousCost = 'Cannot be negative'
-
-    if (totals.total <= 0) {
-      newErrors.total = 'At least one cost must be greater than zero'
-    }
+    if (totals.total <= 0) newErrors.total = 'At least one cost must be greater than zero'
 
     setErrors(newErrors)
     return Object.keys(newErrors).length === 0
   }
 
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+  const handleSubmit = (event: React.FormEvent) => {
+    event.preventDefault()
     if (validate()) {
       onComplete({
         ...data,
@@ -63,167 +56,123 @@ export function FinancialCostsStep({
   }
 
   return (
-    <form id={formId} onSubmit={handleSubmit} className="space-y-6">
-      {/* Cost Input Grid */}
-      <div className="grid grid-cols-2 gap-4">
-        <div className="space-y-2">
-          <Label htmlFor="eggPurchaseCost" className="text-sm font-medium">
-            Egg Purchase Cost (KES)
-          </Label>
-          <Input
-            id="eggPurchaseCost"
-            type="number"
-            step="0.01"
-            min="0"
-            value={data.eggPurchaseCost || ''}
-            onChange={(e) => setData({ ...data, eggPurchaseCost: parseFloat(e.target.value) || 0 })}
-            placeholder="0.00"
-            className={errors.eggPurchaseCost ? 'border-red-500' : ''}
-          />
-          {errors.eggPurchaseCost && (
-            <p className="text-xs text-red-500 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" />
-              {errors.eggPurchaseCost}
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="transportCost" className="text-sm font-medium">
-            Transport Cost (KES)
-          </Label>
-          <Input
-            id="transportCost"
-            type="number"
-            step="0.01"
-            min="0"
-            value={data.transportCost || ''}
-            onChange={(e) => setData({ ...data, transportCost: parseFloat(e.target.value) || 0 })}
-            placeholder="0.00"
-            className={errors.transportCost ? 'border-red-500' : ''}
-          />
-          {errors.transportCost && (
-            <p className="text-xs text-red-500 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" />
-              {errors.transportCost}
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="loadingOffloadingCost" className="text-sm font-medium">
-            Loading/Offloading Cost (KES)
-          </Label>
-          <Input
-            id="loadingOffloadingCost"
-            type="number"
-            step="0.01"
-            min="0"
-            value={data.loadingOffloadingCost || ''}
-            onChange={(e) =>
-              setData({ ...data, loadingOffloadingCost: parseFloat(e.target.value) || 0 })
-            }
-            placeholder="0.00"
-            className={errors.loadingOffloadingCost ? 'border-red-500' : ''}
-          />
-          {errors.loadingOffloadingCost && (
-            <p className="text-xs text-red-500 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" />
-              {errors.loadingOffloadingCost}
-            </p>
-          )}
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="miscellaneousCost" className="text-sm font-medium">
-            Miscellaneous Cost (KES)
-          </Label>
-          <Input
-            id="miscellaneousCost"
-            type="number"
-            step="0.01"
-            min="0"
-            value={data.miscellaneousCost || ''}
-            onChange={(e) =>
-              setData({ ...data, miscellaneousCost: parseFloat(e.target.value) || 0 })
-            }
-            placeholder="0.00"
-            className={errors.miscellaneousCost ? 'border-red-500' : ''}
-          />
-          {errors.miscellaneousCost && (
-            <p className="text-xs text-red-500 flex items-center gap-1">
-              <AlertCircle className="w-3 h-3" />
-              {errors.miscellaneousCost}
-            </p>
-          )}
-        </div>
+    <form id={formId} onSubmit={handleSubmit} className="space-y-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <CostInput
+          id="eggPurchaseCost"
+          label="Egg Purchase Cost (KES)"
+          value={data.eggPurchaseCost}
+          error={errors.eggPurchaseCost}
+          onChange={(value) => setData({ ...data, eggPurchaseCost: value })}
+        />
+        <CostInput
+          id="transportCost"
+          label="Transport Cost (KES)"
+          value={data.transportCost}
+          error={errors.transportCost}
+          onChange={(value) => setData({ ...data, transportCost: value })}
+        />
+        <CostInput
+          id="loadingOffloadingCost"
+          label="Loading / Offloading Cost (KES)"
+          value={data.loadingOffloadingCost}
+          error={errors.loadingOffloadingCost}
+          onChange={(value) => setData({ ...data, loadingOffloadingCost: value })}
+        />
+        <CostInput
+          id="miscellaneousCost"
+          label="Miscellaneous Cost (KES)"
+          value={data.miscellaneousCost}
+          error={errors.miscellaneousCost}
+          onChange={(value) => setData({ ...data, miscellaneousCost: value })}
+        />
       </div>
 
-      {errors.total && (
-        <div className="flex gap-3 rounded-lg bg-red-500/10 border border-red-500/30 p-3">
-          <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-          <p className="text-sm text-red-500">{errors.total}</p>
+      {errors.total ? (
+        <div className="flex gap-3 rounded-button border border-destructive/20 bg-destructive/10 p-3">
+          <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-destructive" />
+          <p className="text-sm text-destructive">{errors.total}</p>
         </div>
-      )}
+      ) : null}
 
-      {/* Cost Summary Cards */}
-      <div className="grid grid-cols-2 gap-4">
-        <Card className="p-4 bg-gradient-to-r from-violet-500/10 to-purple-500/10 border border-violet-500/20">
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">Total Acquisition Cost</p>
-            <p className="text-2xl font-bold text-violet-600 dark:text-violet-400">
-              KES {totals.total.toFixed(2)}
-            </p>
-          </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Card className="rounded-card border-border bg-card p-4 shadow-[var(--shadow-card)]">
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Total Acquisition Cost</p>
+          <p className="mt-1 text-2xl font-semibold tabular-nums text-primary">KES {totals.total.toFixed(2)}</p>
         </Card>
-
-        <Card className="p-4 bg-gradient-to-r from-orange-500/10 to-yellow-500/10 border border-orange-500/20">
-          <div className="space-y-1">
-            <p className="text-xs text-muted-foreground">Cost per Accepted Egg</p>
-            <p className="text-2xl font-bold text-orange-600 dark:text-orange-400">
-              KES {totals.perEgg.toFixed(2)}
-            </p>
-            {acceptedEggs > 0 && (
-              <p className="text-xs text-muted-foreground mt-2">
-                ÷ {acceptedEggs} accepted eggs
-              </p>
-            )}
-          </div>
+        <Card className="rounded-card border-border bg-card p-4 shadow-[var(--shadow-card)]">
+          <p className="text-xs font-semibold uppercase tracking-[0.08em] text-muted-foreground">Cost per Accepted Egg</p>
+          <p className="mt-1 text-2xl font-semibold tabular-nums text-warning">KES {totals.perEgg.toFixed(2)}</p>
+          {acceptedEggs > 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">Based on {acceptedEggs.toLocaleString()} accepted eggs</p>
+          ) : null}
         </Card>
       </div>
 
-      {/* Cost Breakdown */}
       <div className="space-y-2">
-        <p className="text-sm font-medium text-foreground">Cost Breakdown</p>
-        <div className="space-y-1 text-sm">
-          <div className="flex justify-between text-muted-foreground">
-            <span>Egg Purchase</span>
-            <span>KES {data.eggPurchaseCost.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between text-muted-foreground">
-            <span>Transport</span>
-            <span>KES {data.transportCost.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between text-muted-foreground">
-            <span>Loading/Offloading</span>
-            <span>KES {data.loadingOffloadingCost.toFixed(2)}</span>
-          </div>
-          <div className="flex justify-between text-muted-foreground">
-            <span>Miscellaneous</span>
-            <span>KES {data.miscellaneousCost.toFixed(2)}</span>
-          </div>
-          <div className="border-t border-input mt-2 pt-2 flex justify-between font-medium">
+        <p className="text-sm font-semibold text-foreground">Cost Breakdown</p>
+        <div className="space-y-1 rounded-card border border-border bg-card p-3 text-sm">
+          <BreakdownRow label="Egg Purchase" value={data.eggPurchaseCost} />
+          <BreakdownRow label="Transport" value={data.transportCost} />
+          <BreakdownRow label="Loading / Offloading" value={data.loadingOffloadingCost} />
+          <BreakdownRow label="Miscellaneous" value={data.miscellaneousCost} />
+          <div className="mt-2 flex justify-between border-t border-border pt-2 font-semibold">
             <span>Total</span>
             <span>KES {totals.total.toFixed(2)}</span>
           </div>
         </div>
       </div>
 
-      <div className="flex justify-end pt-4">
-        <Button type="submit" className="bg-primary">
-          Continue to Incubation Assignment
-        </Button>
+      <div className="flex justify-end">
+        <Button type="submit">Continue to Incubation Assignment</Button>
       </div>
     </form>
+  )
+}
+
+function CostInput({
+  id,
+  label,
+  value,
+  error,
+  onChange,
+}: {
+  id: string
+  label: string
+  value: number
+  error?: string
+  onChange: (value: number) => void
+}) {
+  return (
+    <div className="space-y-1.5">
+      <Label htmlFor={id} className="text-xs font-semibold text-muted-foreground">
+        {label}
+      </Label>
+      <Input
+        id={id}
+        type="number"
+        step="0.01"
+        min="0"
+        value={value || ''}
+        onChange={(event) => onChange(parseFloat(event.target.value) || 0)}
+        placeholder="0.00"
+        className={cn('h-9 bg-background text-sm', error && 'border-destructive focus-visible:ring-destructive/20')}
+      />
+      {error ? (
+        <p className="flex items-center gap-1 text-xs text-destructive">
+          <AlertCircle className="h-3 w-3" />
+          {error}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function BreakdownRow({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex justify-between text-muted-foreground">
+      <span>{label}</span>
+      <span>KES {value.toFixed(2)}</span>
+    </div>
   )
 }

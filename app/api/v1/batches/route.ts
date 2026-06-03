@@ -13,7 +13,7 @@ import {
   getSearchParams,
   paginatedResponse,
 } from '@/lib/api-response';
-import { requireRole } from '@/lib/rbac';
+import { requireRole } from '@/lib/auth';
 import { requireAuth, getCurrentUserProfile } from '@/lib/auth';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
 import { logBatchCreated } from '@/lib/audit';

@@ -4,16 +4,17 @@
 export interface BatchSupplierInfo {
   supplierId?: string;
   supplierName: string;
-  contactPerson: string;
-  phone: string;
+  contactPerson?: string;
+  phone?: string;
   email?: string;
-  location: string;
-  invoiceNumber: string;
+  location?: string;
+  invoiceNumber?: string;
 }
 
 export interface BatchReceptionInfo {
   dateReceived: Date;
-  receivedBy: string; // user_id
+  receivedBy?: string; // user_id when selected from staff list
+  receivedByName: string; // typed operational receiver name
   breedType: string;
   totalEggsReceived: number;
   notes?: string;
@@ -41,10 +42,24 @@ export interface BatchFinancialCosts {
 
 export interface BatchIncubationAssignment {
   incubatorId: string;
+  incubatorName?: string;
   setDate: Date;
   expectedHatchDate: Date;
   responsibleTechnician?: string; // user_id
+  responsibleTechnicianName?: string;
+  startColumnNumber?: number; // physical incubator unit/rack
+  startRowNumber?: number; // tray inside the unit/rack
   assignmentNotes?: string;
+  autoAllocate?: boolean;
+  placementSummary?: string;
+  allocations?: BatchIncubatorAllocationDraft[];
+}
+
+export interface BatchIncubatorAllocationDraft {
+  columnNumber: number;
+  rowNumber: number;
+  slotCapacity: number;
+  eggsAllocated: number;
 }
 
 export interface CompleteBatchWorkflow {

@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { useSubmitLock } from '@/hooks/use-submit-lock'
 import { Thermometer } from 'lucide-react'
 import { logEnvironmentInfo } from '../actions'
 
@@ -22,24 +23,31 @@ export function LogEnvironmentDialog({ incubators }: { incubators: any[] }) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selectedIncubator, setSelectedIncubator] = useState('')
+  const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
   
   const router = useRouter()
+  const selectedIncubatorLabel = incubators.find((incubator) => incubator.id === selectedIncubator)?.name
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    if (!acquireSubmitLock()) return
     setLoading(true)
     setError(null)
     
     const formData = new FormData(e.currentTarget)
-    const result = await logEnvironmentInfo(formData)
-    
-    if (result?.error) {
-      setError(result.error)
+    try {
+      const result = await logEnvironmentInfo(formData)
+
+      if (result?.error) {
+        setError(result.error)
+      } else {
+        setOpen(false)
+        router.refresh()
+      }
+    } finally {
+      releaseSubmitLock()
       setLoading(false)
-    } else {
-      setLoading(false)
-      setOpen(false)
-      router.refresh()
     }
   }
 
@@ -60,9 +68,16 @@ export function LogEnvironmentDialog({ incubators }: { incubators: any[] }) {
           
           <div className="grid gap-2">
             <Label htmlFor="incubator_id">Incubator Unit</Label>
-            <Select name="incubator_id" required>
+            <Select
+              name="incubator_id"
+              value={selectedIncubator}
+              onValueChange={(value) => setSelectedIncubator(value || '')}
+              required
+            >
               <SelectTrigger>
-                <SelectValue placeholder="Select Incubator" />
+                <SelectValue placeholder="Select Incubator">
+                  {selectedIncubatorLabel || 'Select Incubator'}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {incubators.map((i) => (
@@ -119,7 +134,7 @@ export function LogEnvironmentDialog({ incubators }: { incubators: any[] }) {
           </div>
 
           <div className="flex justify-end pt-2">
-            <Button type="submit" disabled={loading || incubators.length === 0}>
+            <Button type="submit" disabled={loading || incubators.length === 0} aria-busy={loading}>
               {loading ? 'Recording...' : 'Record Telemetry'}
             </Button>
           </div>

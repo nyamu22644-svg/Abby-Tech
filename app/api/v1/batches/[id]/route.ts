@@ -12,7 +12,7 @@ import {
   validateMethod,
   getJsonBody,
 } from '@/lib/api-response';
-import { requireRole, requireAuth } from '@/lib/rbac';
+import { requireAuth, requireRole } from '@/lib/auth';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
 import { logBatchUpdated, logBatchStatusChange } from '@/lib/audit';
 

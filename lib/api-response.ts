@@ -75,14 +75,14 @@ export function errorResponse(
  * Wrapper for API route handlers with error catching
  */
 export function apiHandler(
-  handler: (req: NextRequest) => Promise<NextResponse>
+  handler: (req: NextRequest, context: any) => Promise<NextResponse>
 ) {
-  return async (req: NextRequest) => {
+  return async (req: NextRequest, context: any) => {
     try {
       // Log request
       console.log(`[API] ${req.method} ${req.nextUrl.pathname}`);
 
-      return await handler(req);
+      return await handler(req, context);
     } catch (error) {
       console.error(`[API Error] ${req.method} ${req.nextUrl.pathname}:`, error);
 

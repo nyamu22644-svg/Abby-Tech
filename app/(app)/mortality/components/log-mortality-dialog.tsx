@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { Plus } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -15,6 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useSubmitLock } from '@/hooks/use-submit-lock'
 import { logMortalityEvent } from '../actions'
 
 type BatchOption = {
@@ -26,14 +28,17 @@ export function LogMortalityDialog({ batches }: { batches: BatchOption[] }) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
   
   const [selectedBatch, setSelectedBatch] = useState<string>('')
   const [stage, setStage] = useState<string>('')
   const [cause, setCause] = useState<string>('')
   const router = useRouter()
+  const selectedBatchLabel = batches.find((batch) => batch.id === selectedBatch)?.batch_number
 
   async function onSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault()
+    if (!acquireSubmitLock()) return
     setLoading(true)
     setError(null)
     
@@ -42,38 +47,50 @@ export function LogMortalityDialog({ batches }: { batches: BatchOption[] }) {
     formData.set('stage', stage)
     formData.set('cause', cause)
 
-    const result = await logMortalityEvent(formData)
-    
-    if (result?.error) {
-      setError(result.error)
+    try {
+      const result = await logMortalityEvent(formData)
+
+      if (result?.error) {
+        setError(result.error)
+      } else {
+        setOpen(false)
+        router.refresh()
+      }
+    } finally {
+      releaseSubmitLock()
       setLoading(false)
-    } else {
-      setLoading(false)
-      setOpen(false)
-      router.refresh()
     }
   }
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button>Log Mortality Event</Button>} />
-      <DialogContent className="sm:max-w-[425px]">
+      <DialogTrigger
+        render={
+          <Button className="h-9 gap-2 rounded-button px-4 text-sm font-semibold shadow-[var(--shadow-card)]">
+            <Plus className="h-4 w-4" />
+            Log Mortality
+          </Button>
+        }
+      />
+      <DialogContent className="sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>Log Mortality</DialogTitle>
           <DialogDescription>
             Record a mortality event. This will automatically update operational losses.
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={onSubmit} className="grid gap-4 py-4">
+        <form onSubmit={onSubmit} className="grid gap-4 py-2">
           {error && (
-            <div className="bg-destructive/15 text-destructive p-3 rounded-md text-sm">{error}</div>
+            <div className="rounded-button border border-destructive/20 bg-destructive/10 p-3 text-sm text-destructive">{error}</div>
           )}
           
           <div className="grid gap-2">
             <Label htmlFor="batch">Associated Batch</Label>
             <Select value={selectedBatch} onValueChange={(val) => setSelectedBatch(val || '')} required>
               <SelectTrigger>
-                <SelectValue placeholder="Select a batch" />
+                <SelectValue placeholder="Select a batch">
+                  {selectedBatchLabel || 'Select a batch'}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {batches.map((b) => (
@@ -130,7 +147,7 @@ export function LogMortalityDialog({ batches }: { batches: BatchOption[] }) {
           </div>
 
           <div className="flex justify-end pt-2">
-            <Button type="submit" disabled={loading || !selectedBatch || !stage || !cause}>
+            <Button className="h-9 rounded-button px-4" type="submit" disabled={loading || !selectedBatch || !stage || !cause} aria-busy={loading}>
               {loading ? 'Logging...' : 'Save Mortality Form'}
             </Button>
           </div>

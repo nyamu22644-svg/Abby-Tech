@@ -3,11 +3,11 @@
 import { useState, useCallback } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
-import { Card } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { ArrowRight, ArrowLeft, CheckCircle2, AlertCircle, Loader2 } from 'lucide-react'
 import { createBatch } from '../actions'
 import { createClient } from '@/lib/supabase/client'
+import { useSubmitLock } from '@/hooks/use-submit-lock'
 import type { CompleteBatchWorkflow } from '@/types/batch-workflow.types'
 import { SupplierInfoStep } from './batch-wizard-steps/supplier-info-step'
 import { ReceptionInfoStep } from './batch-wizard-steps/reception-info-step'
@@ -17,11 +17,11 @@ import { IncubationAssignmentStep } from './batch-wizard-steps/incubation-assign
 import { ReviewStep } from './batch-wizard-steps/review-step'
 
 const STEPS = [
-  { id: 1, title: 'Supplier Information', description: 'Egg source and delivery details' },
-  { id: 2, title: 'Reception Details', description: 'When and how eggs were received' },
-  { id: 3, title: 'Quality Inspection', description: 'Inspect and count eggs by condition' },
-  { id: 4, title: 'Acquisition Costs', description: 'Calculate total cost per egg' },
-  { id: 5, title: 'Incubation Assignment', description: 'Assign to incubator (optional)' },
+  { id: 1, title: 'Supplier', description: 'Who supplied the eggs' },
+  { id: 2, title: 'Receipt', description: 'Who received them and how many arrived' },
+  { id: 3, title: 'Inspection', description: 'Record only exceptions; accepted eggs are calculated' },
+  { id: 4, title: 'Costs', description: 'Capture money spent; unit costs are calculated' },
+  { id: 5, title: 'Incubator Placement', description: 'Place eggs into available incubator slots automatically' },
   { id: 6, title: 'Review & Submit', description: 'Confirm batch setup' },
 ]
 
@@ -39,6 +39,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
   const [createdBatchNumber, setCreatedBatchNumber] = useState<string>('')
   const [uploadWarning, setUploadWarning] = useState<string | null>(null)
   const [inspectionPhotos, setInspectionPhotos] = useState<File[]>([])
+  const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
 
   const [workflow, setWorkflow] = useState<CompleteBatchWorkflow>({
     supplier: {
@@ -50,7 +51,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
     },
     reception: {
       dateReceived: new Date(),
-      receivedBy: '',
+      receivedByName: '',
       breedType: '',
       totalEggsReceived: 0,
     },
@@ -103,6 +104,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
   }
 
   const handleSubmit = async () => {
+    if (!acquireSubmitLock()) return
     setLoading(true)
     setError(null)
     setUploadWarning(null)
@@ -131,6 +133,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
     } catch (err: any) {
       setError(err.message || 'An error occurred')
     } finally {
+      releaseSubmitLock()
       setLoading(false)
     }
   }
@@ -140,7 +143,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
       setCurrentStep(1)
       setWorkflow({
         supplier: { supplierName: '', contactPerson: '', phone: '', location: '', invoiceNumber: '' },
-        reception: { dateReceived: new Date(), receivedBy: '', breedType: '', totalEggsReceived: 0 },
+        reception: { dateReceived: new Date(), receivedByName: '', breedType: '', totalEggsReceived: 0 },
         inspection: { crackedEggs: 0, dirtyEggs: 0, rejectedEggs: 0, inspectionStatus: 'PENDING' },
         costs: { eggPurchaseCost: 0, transportCost: 0, loadingOffloadingCost: 0, miscellaneousCost: 0 },
       })
@@ -207,26 +210,26 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
 
   return (
     <Dialog open={isOpen} onOpenChange={handleClose}>
-      <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle>Create Egg Batch</DialogTitle>
-          <DialogDescription>
+      <DialogContent className="max-h-[88vh] overflow-y-auto border-border bg-popover p-5 sm:max-w-[620px] lg:max-w-[680px]">
+        <DialogHeader className="gap-1.5">
+          <DialogTitle className="text-base font-semibold tracking-tight text-foreground">Create Egg Batch</DialogTitle>
+          <DialogDescription className="text-[13px]">
             {success ? 'Batch created successfully' : `Step ${currentStep} of ${STEPS.length}: ${STEPS[currentStep - 1].title}`}
           </DialogDescription>
         </DialogHeader>
 
         {success ? (
-          <div className="flex flex-col items-center justify-center py-12 space-y-4">
-            <div className="w-16 h-16 rounded-full bg-emerald-500/20 flex items-center justify-center">
-              <CheckCircle2 className="w-8 h-8 text-emerald-500" />
+          <div className="flex flex-col items-center justify-center space-y-4 py-10">
+            <div className="flex h-14 w-14 items-center justify-center rounded-full bg-success/10">
+              <CheckCircle2 className="h-7 w-7 text-success" />
             </div>
             <div className="text-center space-y-2">
-              <h3 className="text-lg font-semibold text-foreground">Batch Created Successfully</h3>
+              <h3 className="text-base font-semibold text-foreground">Batch Created Successfully</h3>
               <p className="text-sm text-muted-foreground">
                 Batch: <span className="font-mono font-medium">{createdBatchNumber}</span>
               </p>
               {uploadWarning && (
-                <p className="text-xs text-amber-500">{uploadWarning}</p>
+                <p className="text-xs text-warning">{uploadWarning}</p>
               )}
               <p className="text-xs text-muted-foreground">Redirecting to batches list...</p>
             </div>
@@ -234,49 +237,49 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
         ) : (
           <>
             {/* Progress Indicator */}
-            <div className="mb-6">
-              <div className="flex justify-between mb-4">
+            <div className="space-y-3 rounded-card border border-border bg-card/50 p-3">
+              <div className="flex items-center justify-between gap-2">
                 {STEPS.map((step, idx) => (
-                  <div key={step.id} className="flex flex-col items-center flex-1">
+                  <div key={step.id} className="flex flex-1 items-center">
                     <div
-                      className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-medium transition-all ${
+                      className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-semibold transition-all ${
                         currentStep > step.id
-                          ? 'bg-emerald-500 text-white'
+                          ? 'bg-success text-white'
                           : currentStep === step.id
                           ? 'bg-primary text-primary-foreground'
                           : 'bg-muted text-muted-foreground'
                       }`}
                     >
-                      {currentStep > step.id ? <CheckCircle2 className="w-4 h-4" /> : step.id}
+                      {currentStep > step.id ? <CheckCircle2 className="h-4 w-4" /> : step.id}
                     </div>
                     {idx < STEPS.length - 1 && (
                       <div
-                        className={`flex-1 h-1 mx-2 mt-2 ${
-                          currentStep > step.id ? 'bg-emerald-500' : 'bg-muted'
+                        className={`mx-2 h-px flex-1 ${
+                          currentStep > step.id ? 'bg-success' : 'bg-border'
                         }`}
                       />
                     )}
                   </div>
                 ))}
               </div>
-              <p className="text-xs text-center text-muted-foreground">
+              <p className="text-center text-xs text-muted-foreground">
                 {STEPS[currentStep - 1].description}
               </p>
             </div>
 
             {/* Error Display */}
             {error && (
-              <div className="flex gap-3 rounded-lg bg-red-500/10 border border-red-500/30 p-3 mb-6">
-                <AlertCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="mt-4 flex gap-3 rounded-button border border-destructive/20 bg-destructive/10 p-3">
+                <AlertCircle className="mt-0.5 h-5 w-5 flex-shrink-0 text-destructive" />
                 <div>
-                  <p className="text-sm font-medium text-red-500">{error}</p>
-                  <p className="text-xs text-red-400/80 mt-1">Please check your input and try again</p>
+                  <p className="text-sm font-medium text-destructive">{error}</p>
+                  <p className="mt-1 text-xs text-destructive/80">Please check your input and try again</p>
                 </div>
               </div>
             )}
 
             {/* Step Content */}
-            <div className="mb-6 min-h-[300px]">
+            <div className="py-4">
               {currentStep === 1 && (
                 <SupplierInfoStep
                   initialData={workflow.supplier}
@@ -312,6 +315,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
               {currentStep === 5 && (
                 <IncubationAssignmentStep
                   initialData={workflow.incubationAssignment}
+                  acceptedEggs={workflow.inspection.acceptedEggs || 0}
                   onComplete={handleStepComplete}
                   onSkip={() => {
                     setWorkflow(prev => ({ ...prev, incubationAssignment: undefined }))
@@ -329,13 +333,13 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
             </div>
 
             {/* Navigation Buttons */}
-            <div className="flex gap-3 justify-between">
+            <div className="flex justify-between gap-3 border-t border-border pt-4">
               <Button
                 variant="outline"
                 onClick={handlePreviousStep}
                 disabled={currentStep === 1 || loading}
               >
-                <ArrowLeft className="w-4 h-4 mr-2" />
+                <ArrowLeft className="mr-2 h-4 w-4" />
                 Previous
               </Button>
 
@@ -355,23 +359,24 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
                     disabled={loading}
                   >
                     Next
-                    <ArrowRight className="w-4 h-4 ml-2" />
+                    <ArrowRight className="ml-2 h-4 w-4" />
                   </Button>
                 )}
                 {currentStep === STEPS.length && (
                   <Button
                     onClick={handleSubmit}
                     disabled={loading}
-                    className="bg-emerald-600 hover:bg-emerald-700"
+                    aria-busy={loading}
+                    className="bg-success text-white hover:bg-success/90"
                   >
                     {loading ? (
                       <>
-                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         Creating...
                       </>
                     ) : (
                       <>
-                        <CheckCircle2 className="w-4 h-4 mr-2" />
+                        <CheckCircle2 className="mr-2 h-4 w-4" />
                         Create Batch
                       </>
                     )}

@@ -11,26 +11,26 @@ import {
   validateMethod,
   getJsonBody,
 } from '@/lib/api-response';
-import { requireRole, requireAuth } from '@/lib/rbac';
+import { requireAuth, requireRole } from '@/lib/auth';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
-import { logOrderUpdated, logOrderPaymentReceived, logOrderBatchAllocated } from '@/lib/audit';
+import { logOrderUpdated, logOrderBatchAllocated } from '@/lib/audit';
 
 const updateOrderSchema = z.object({
   status: z
     .enum([
       'INQUIRY',
       'RESERVED',
-      'DEPOSIT_PAID',
+      'CONFIRMED',
       'ALLOCATED',
       'READY_FOR_DISPATCH',
       'DISPATCHED',
-      'COMPLETED',
+      'DELIVERED',
       'CANCELLED',
     ])
     .optional(),
-  payment_status: z.enum(['UNPAID', 'DEPOSIT_PAID', 'FULLY_PAID', 'REFUNDED']).optional(),
-  dispatch_status: z.enum(['PENDING', 'SCHEDULED', 'DISPATCHED', 'DELIVERED']).optional(),
-  allocated_batch_id: z.string().uuid().optional(),
+  payment_status: z.enum(['PENDING', 'PARTIAL', 'PAID', 'REFUNDED']).optional(),
+  dispatch_status: z.enum(['PENDING', 'SCHEDULED', 'DISPATCHED', 'DELIVERED', 'FAILED']).optional(),
+  batch_id: z.string().uuid().optional(),
   notes: z.string().optional(),
 });
 
@@ -45,10 +45,11 @@ export const GET = apiHandler(async (req: NextRequest, props: any) => {
   }
 
   const supabase = await createClient();
+  const db = supabase as any;
 
-  const { data: order, error } = await supabase
+  const { data: order, error } = await db
     .from('orders')
-    .select('*')
+    .select('*, customers(name, phone, address, city, country), order_items(id, batch_id, quantity, unit_price, total_price, status)')
     .eq('id', orderId)
     .is('deleted_at', null)
     .single();
@@ -74,11 +75,12 @@ export const PATCH = apiHandler(async (req: NextRequest, props: any) => {
   const validatedData = updateOrderSchema.parse(body);
 
   const supabase = await createClient();
+  const db = supabase as any;
 
   // Get current order
-  const { data: currentOrder, error: fetchError } = await supabase
+  const { data: currentOrder, error: fetchError } = await db
     .from('orders')
-    .select('*')
+    .select('*, order_items(id, batch_id, quantity)')
     .eq('id', orderId)
     .is('deleted_at', null)
     .single();
@@ -87,12 +89,14 @@ export const PATCH = apiHandler(async (req: NextRequest, props: any) => {
     throw new ApiError(ERROR_CODES.NOT_FOUND, 'Order not found', 404);
   }
 
+  const { batch_id, ...orderUpdates } = validatedData;
+
   const updateData: any = {
-    ...validatedData,
+    ...orderUpdates,
     updated_at: new Date().toISOString(),
   };
 
-  const { data: updatedOrder, error } = await supabase
+  const { data: updatedOrder, error } = await db
     .from('orders')
     .update(updateData)
     .eq('id', orderId)
@@ -107,8 +111,24 @@ export const PATCH = apiHandler(async (req: NextRequest, props: any) => {
   await logOrderUpdated(orderId, currentOrder, updateData);
 
   // Log specific actions
-  if (validatedData.allocated_batch_id && validatedData.allocated_batch_id !== currentOrder.allocated_batch_id) {
-    await logOrderBatchAllocated(orderId, validatedData.allocated_batch_id, currentOrder.quantity);
+  if (batch_id) {
+    const currentItem = Array.isArray(currentOrder.order_items) ? currentOrder.order_items[0] : null;
+    const { error: allocationError } = await db
+      .from('order_items')
+      .update({
+        batch_id,
+        status: 'ALLOCATED',
+        updated_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId);
+
+    if (allocationError) {
+      throw new ApiError(ERROR_CODES.INTERNAL_ERROR, allocationError.message, 500);
+    }
+
+    if (batch_id !== currentItem?.batch_id) {
+      await logOrderBatchAllocated(orderId, batch_id, currentOrder.total_quantity || currentItem?.quantity || 0);
+    }
   }
 
   return successResponse(updatedOrder, 200);

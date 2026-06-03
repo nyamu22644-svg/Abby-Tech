@@ -39,3 +39,29 @@ export async function login(formData: FormData) {
   }
 }
 
+export async function signup(formData: FormData) {
+  const supabase = await createClient()
+
+  const data = {
+    email: formData.get('email') as string,
+    password: formData.get('password') as string,
+  }
+
+  if (!data.email || !data.password) {
+    return { error: 'Email and password are required' }
+  }
+
+  try {
+    const { error } = await supabase.auth.signUp(data)
+
+    if (error) {
+      return { error: error.message }
+    }
+
+    revalidatePath('/', 'layout')
+    return { success: true }
+  } catch (err: any) {
+    console.error('Signup error:', err)
+    return { error: 'Failed to connect to authentication service' }
+  }
+}

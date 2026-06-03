@@ -12,7 +12,9 @@ export function PremiumLoginForm() {
   const error = searchParams.get('error')
 
   // Form state
-  const [email, setEmail] = useState('')
+  const [email, setEmail] = useState(() =>
+    typeof localStorage === 'undefined' ? '' : localStorage.getItem('rememberedEmail') || ''
+  )
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [rememberMe, setRememberMe] = useState(true)
@@ -20,13 +22,13 @@ export function PremiumLoginForm() {
   // UI state
   const [loading, setLoading] = useState(false)
   const [localError, setLocalError] = useState<string | null>(error)
-  const [isOnline, setIsOnline] = useState(true)
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  )
   const [isValidating, setIsValidating] = useState(false)
 
   // Online status detection
   useEffect(() => {
-    setIsOnline(navigator.onLine)
-
     const handleOnline = () => setIsOnline(true)
     const handleOffline = () => setIsOnline(false)
 
@@ -103,14 +105,6 @@ export function PremiumLoginForm() {
     },
     [email, password, rememberMe, isFormValid, router]
   )
-
-  // Load remembered email on mount
-  useEffect(() => {
-    const remembered = localStorage.getItem('rememberedEmail')
-    if (remembered) {
-      setEmail(remembered)
-    }
-  }, [])
 
   return (
     <div className="w-full max-w-sm space-y-6">

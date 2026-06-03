@@ -12,6 +12,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from '@/components/ui/dialog'
+import { useSubmitLock } from '@/hooks/use-submit-lock'
 import { addOperationalCost } from '../actions'
 
 const CATEGORIES = [
@@ -30,9 +31,11 @@ export function AddCostDialog({ batchId }: { batchId: string }) {
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
   const router = useRouter()
 
   async function onSubmit(formData: FormData) {
+    if (!acquireSubmitLock()) return
     setLoading(true)
     setError(null)
     
@@ -47,6 +50,7 @@ export function AddCostDialog({ batchId }: { batchId: string }) {
     } catch (err) {
       setError('An unexpected error occurred')
     } finally {
+      releaseSubmitLock()
       setLoading(false)
     }
   }
@@ -119,7 +123,7 @@ export function AddCostDialog({ batchId }: { batchId: string }) {
             <Button type="button" variant="ghost" onClick={() => setOpen(false)} disabled={loading} className="text-muted-foreground hover:text-foreground">
               Cancel
             </Button>
-            <Button type="submit" disabled={loading} className="bg-primary text-primary-foreground hover:bg-primary/90">
+            <Button type="submit" disabled={loading} aria-busy={loading} className="bg-primary text-primary-foreground hover:bg-primary/90">
               {loading ? 'Logging...' : 'Log Expense'}
             </Button>
           </div>

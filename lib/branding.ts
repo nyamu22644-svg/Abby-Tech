@@ -1,5 +1,5 @@
-// Abby Tech Professional Branding System
-// Deep operational blue + agricultural emerald
+// Abbye Chicks Professional Branding System
+// Premium poultry cyan + hatchery teal + warm gold accents
 
 export const ABBY_TECH_COLORS = {
   // Primary operational blue
@@ -50,9 +50,9 @@ export const ABBY_TECH_COLORS = {
 }
 
 export const BRANDING = {
-  name: 'Abby Tech',
-  tagline: 'Smart Hatchery Operations Platform',
-  description: 'Enterprise-grade hatchery management and intelligence system',
+  name: 'Abbye Chicks',
+  tagline: 'Premium Poultry Operations Platform',
+  description: 'Hatchery management and intelligence system for premium chick production',
   industry: 'Agricultural Technology',
   region: 'Kenya',
 }

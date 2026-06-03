@@ -14,7 +14,10 @@ const SESSION_CACHE_TTL = 24 * 60 * 60 * 1000 // 24 hours
 
 export function useSessionPersistence() {
   const { user, isOnline, isOfflineMode } = useAuth()
-  const [hasValidCache, setHasValidCache] = useState(false)
+  const [hasValidCache, setHasValidCache] = useState(() => {
+    if (typeof localStorage === 'undefined') return false
+    return Boolean(localStorage.getItem(SESSION_CACHE_KEY))
+  })
 
   // Save session to cache when user logs in
   useEffect(() => {
@@ -25,10 +28,10 @@ export function useSessionPersistence() {
         timestamp: Date.now(),
       }
       localStorage.setItem(SESSION_CACHE_KEY, JSON.stringify(sessionData))
-      setHasValidCache(true)
+      queueMicrotask(() => setHasValidCache(true))
     } else {
       localStorage.removeItem(SESSION_CACHE_KEY)
-      setHasValidCache(false)
+      queueMicrotask(() => setHasValidCache(false))
     }
   }, [user])
 
@@ -70,13 +73,13 @@ export function useSessionPersistence() {
 
 // Hook for connection state with debounce
 export function useConnectionStatus() {
-  const [isOnline, setIsOnline] = useState(true)
+  const [isOnline, setIsOnline] = useState(() =>
+    typeof navigator === 'undefined' ? true : navigator.onLine
+  )
   const [wasOffline, setWasOffline] = useState(false)
   const [reconnectAttempts, setReconnectAttempts] = useState(0)
 
   useEffect(() => {
-    setIsOnline(navigator.onLine)
-
     let offlineTimer: NodeJS.Timeout
 
     const handleOnline = () => {

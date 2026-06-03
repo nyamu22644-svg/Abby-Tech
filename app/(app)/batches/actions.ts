@@ -4,17 +4,18 @@ import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { logBatchCreated, logBatchUpdated, logBatchStatusChange, logOperationalCostAdded } from '@/lib/audit'
-import { getCurrentUserProfile, requireAuth } from '@/lib/auth'
+import { getCurrentUserProfile, requireAuth, requireRole } from '@/lib/auth'
 import type { CompleteBatchWorkflow } from '@/types/batch-workflow.types'
+import { CANDLING_WINDOW_START_DAY, LOCKDOWN_DAY } from '@/lib/incubation/rules'
 
 // Comprehensive batch workflow schema
 const workflowBatchSchema = z.object({
   supplier: z.object({
     supplierName: z.string().min(1),
-    contactPerson: z.string().min(1),
-    phone: z.string().min(1),
-    location: z.string().min(1),
-    invoiceNumber: z.string().min(1),
+    contactPerson: z.string().optional(),
+    phone: z.string().optional(),
+    location: z.string().optional(),
+    invoiceNumber: z.string().optional(),
     email: z.preprocess(
       (value) => (value === '' ? undefined : value),
       z.string().email().optional()
@@ -22,7 +23,8 @@ const workflowBatchSchema = z.object({
   }),
   reception: z.object({
     dateReceived: z.date().or(z.string()),
-    receivedBy: z.string().min(1),
+    receivedBy: z.string().optional(),
+    receivedByName: z.string().min(1),
     breedType: z.string().min(1),
     totalEggsReceived: z.number().int().positive(),
     notes: z.string().optional(),
@@ -49,9 +51,129 @@ const workflowBatchSchema = z.object({
     setDate: z.date().or(z.string()),
     expectedHatchDate: z.date().or(z.string()),
     responsibleTechnician: z.string().optional(),
+    startColumnNumber: z.number().int().min(1).max(6).optional(),
+    startRowNumber: z.number().int().min(1).max(2).optional(),
     assignmentNotes: z.string().optional(),
+    autoAllocate: z.boolean().optional(),
+    placementSummary: z.string().optional(),
+    allocations: z.array(z.object({
+      columnNumber: z.number().int().positive(),
+      rowNumber: z.number().int().positive(),
+      slotCapacity: z.number().int().positive(),
+      eggsAllocated: z.number().int().positive(),
+    })).optional(),
   }).optional(),
 })
+
+type SupabaseServerClient = Awaited<ReturnType<typeof createClient>>
+
+type IncubatorAllocationPlan = {
+  allocations: Array<{
+    columnNumber: number
+    rowNumber: number
+    slotCapacity: number
+    eggsAllocated: number
+  }>
+  summary: string
+}
+
+function toIsoString(value: Date | string | null | undefined) {
+  if (!value) return null
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
+}
+
+async function buildIncubatorAllocationPlan(
+  supabase: SupabaseServerClient,
+  incubatorId: string,
+  eggsToPlace: number,
+  startColumnNumber = 1,
+  startRowNumber = 1
+): Promise<IncubatorAllocationPlan | { error: string }> {
+  const { data: incubator, error: incubatorError } = await supabase
+    .from('incubators')
+    .select('id, name, capacity')
+    .eq('id', incubatorId)
+    .maybeSingle()
+
+  if (incubatorError) {
+    return {
+      error: `Unable to read incubator placement settings. Apply the latest Supabase migration, then try again. ${incubatorError.message}`,
+    }
+  }
+
+  if (!incubator) {
+    return { error: 'Selected incubator was not found.' }
+  }
+
+  const columns = 6
+  const rows = 2
+  const eggsPerSlot = 88
+  const capacity = Number(incubator.capacity) || columns * rows * eggsPerSlot
+
+  const { data: existingAllocations, error: allocationError } = await supabase
+    .from('batch_incubator_allocations')
+    .select('column_number, row_number, eggs_allocated')
+    .eq('incubator_id', incubatorId)
+
+  if (allocationError) {
+    return {
+      error: `Incubator slot tracking is not available. Apply the latest Supabase migration, then try again. ${allocationError.message}`,
+    }
+  }
+
+  const occupied = new Map<string, number>()
+  for (const allocation of existingAllocations || []) {
+    const key = `${allocation.column_number}-${allocation.row_number}`
+    occupied.set(key, (occupied.get(key) || 0) + Number(allocation.eggs_allocated || 0))
+  }
+
+  let remaining = eggsToPlace
+  const allocations: IncubatorAllocationPlan['allocations'] = []
+  const slots = []
+
+  for (let column = 1; column <= columns; column += 1) {
+    for (let row = 1; row <= rows; row += 1) {
+      slots.push({ column, row })
+    }
+  }
+
+  const startIndex = slots.findIndex(
+    (slot) => slot.column === startColumnNumber && slot.row === startRowNumber
+  )
+  const usableSlots = startIndex >= 0 ? slots.slice(startIndex) : slots
+
+  for (const slot of usableSlots) {
+    if (remaining <= 0) break
+
+      const key = `${slot.column}-${slot.row}`
+      const available = Math.max(eggsPerSlot - (occupied.get(key) || 0), 0)
+      if (available <= 0) continue
+
+      const eggsAllocated = Math.min(remaining, available)
+      allocations.push({
+        columnNumber: slot.column,
+        rowNumber: slot.row,
+        slotCapacity: eggsPerSlot,
+        eggsAllocated,
+      })
+      remaining -= eggsAllocated
+  }
+
+  if (remaining > 0) {
+    return {
+      error: `${incubator.name} does not have enough free tray space from Unit ${startColumnNumber}, Tray ${startRowNumber}. ${remaining.toLocaleString()} eggs could not be placed.`,
+    }
+  }
+
+  const slotText = allocations
+    .map((slot) => `Unit ${slot.columnNumber}, Tray ${slot.rowNumber} ${slot.eggsAllocated} eggs`)
+    .join(', ')
+
+  return {
+    allocations,
+    summary: `Placed ${eggsToPlace.toLocaleString()} eggs in ${incubator.name}: ${slotText}.`,
+  }
+}
 
 /**
  * Create a complete batch with all operational workflow data
@@ -127,10 +249,10 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
           .insert({
             tenant_id: profile.tenant_id || null,
             name: supplierName,
-            contact_name: workflow.supplier.contactPerson,
-            phone: workflow.supplier.phone,
+            contact_name: workflow.supplier.contactPerson || null,
+            phone: workflow.supplier.phone || null,
             email: workflow.supplier.email || null,
-            address: workflow.supplier.location,
+            address: workflow.supplier.location || null,
             created_by: profile.id,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
@@ -148,8 +270,30 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
     }
 
     const hasAssignment = Boolean(workflow.incubationAssignment)
-    const setDate = hasAssignment ? workflow.incubationAssignment!.setDate : null
-    const expectedHatchDate = hasAssignment ? workflow.incubationAssignment!.expectedHatchDate : null
+    let placementPlan: IncubatorAllocationPlan | null = null
+
+    if (hasAssignment) {
+      if (acceptedEggs <= 0) {
+        return { success: false, error: 'Accepted eggs must be greater than zero before placing the batch in an incubator.' }
+      }
+
+      const plan = await buildIncubatorAllocationPlan(
+        supabase,
+        workflow.incubationAssignment!.incubatorId,
+        acceptedEggs,
+        workflow.incubationAssignment!.startColumnNumber || 1,
+        workflow.incubationAssignment!.startRowNumber || 1
+      )
+
+      if ('error' in plan) {
+        return { success: false, error: plan.error }
+      }
+
+      placementPlan = plan
+    }
+
+    const setDate = hasAssignment ? toIsoString(workflow.incubationAssignment!.setDate) : null
+    const expectedHatchDate = hasAssignment ? toIsoString(workflow.incubationAssignment!.expectedHatchDate) : null
     const incubatorId = hasAssignment ? workflow.incubationAssignment!.incubatorId : null
     const batchStatus = hasAssignment ? 'SETTER' : 'LOGGED'
     const quantitySet = hasAssignment ? acceptedEggs : null
@@ -165,22 +309,24 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
         supplier_id: supplierId,
         incubator_id: incubatorId,
         quantity_set: quantitySet,
-        date_received: workflow.reception.dateReceived,
-        received_by: workflow.reception.receivedBy,
+        date_received: toIsoString(workflow.reception.dateReceived),
+        received_by: workflow.reception.receivedBy || profile.id || null,
+        received_by_name: workflow.reception.receivedByName.trim(),
         breed_type: workflow.reception.breedType,
-        invoice_number: workflow.supplier.invoiceNumber,
-        contact_person: workflow.supplier.contactPerson,
-        supplier_phone: workflow.supplier.phone,
-        supplier_location: workflow.supplier.location,
+        invoice_number: workflow.supplier.invoiceNumber || null,
+        contact_person: workflow.supplier.contactPerson || null,
+        supplier_phone: workflow.supplier.phone || null,
+        supplier_location: workflow.supplier.location || null,
         notes: workflow.reception.notes || null,
         set_date: setDate,
         expected_hatch_date: expectedHatchDate,
+        placement_summary: placementPlan?.summary || null,
         cracked_eggs: workflow.inspection.crackedEggs,
         dirty_eggs: workflow.inspection.dirtyEggs,
         rejected_eggs: workflow.inspection.rejectedEggs,
         accepted_eggs: acceptedEggs,
         inspection_status: 'COMPLETED',
-        inspection_completed_at: new Date().toISOString(),
+        inspection_completed_at: toIsoString(workflow.inspection.inspectionCompletedAt) || new Date().toISOString(),
         inspection_notes: workflow.inspection.inspectionNotes,
         egg_purchase_cost: workflow.costs.eggPurchaseCost,
         transport_cost: workflow.costs.transportCost,
@@ -282,10 +428,10 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
         .insert({
           batch_id: newBatch.id,
           incubator_id: workflow.incubationAssignment.incubatorId,
-          responsible_technician: workflow.incubationAssignment.responsibleTechnician,
-          set_date: workflow.incubationAssignment.setDate,
-          expected_hatch_date: workflow.incubationAssignment.expectedHatchDate,
-          assignment_notes: workflow.incubationAssignment.assignmentNotes,
+          responsible_technician: workflow.incubationAssignment.responsibleTechnician || profile.id,
+          set_date: setDate,
+          expected_hatch_date: expectedHatchDate,
+          assignment_notes: workflow.incubationAssignment.assignmentNotes || placementPlan?.summary || null,
           assigned_by: profile.id,
           status: 'ASSIGNED',
           sync_version: 1,
@@ -293,6 +439,25 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
 
       if (assignmentError) {
         console.warn('Warning: Failed to create incubation assignment:', assignmentError)
+      }
+
+      if (placementPlan?.allocations.length) {
+        const { error: allocationInsertError } = await supabase
+          .from('batch_incubator_allocations')
+          .insert(placementPlan.allocations.map((slot) => ({
+            batch_id: newBatch.id,
+            incubator_id: workflow.incubationAssignment!.incubatorId,
+            column_number: slot.columnNumber,
+            row_number: slot.rowNumber,
+            slot_capacity: slot.slotCapacity,
+            eggs_allocated: slot.eggsAllocated,
+            assigned_by: profile.id,
+            sync_version: 1,
+          })))
+
+        if (allocationInsertError) {
+          console.warn('Warning: Failed to create incubator slot allocations:', allocationInsertError)
+        }
       }
     }
 
@@ -305,6 +470,7 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
     })
 
     revalidatePath('/batches')
+    revalidatePath('/incubation')
     return { success: true, batchId: newBatch.id, batchNumber }
   } catch (err: any) {
     console.error('Error in createBatch:', err)
@@ -384,6 +550,21 @@ export async function updateBatchStatus(id: string, status: string, additionalUp
     .eq('id', id)
     .single()
 
+  if (!currentBatch) {
+    return { success: false, error: 'Batch not found' }
+  }
+
+  const nextBatch = { ...currentBatch, ...additionalUpdates, status }
+  if (
+    ['SETTER', 'HATCHER', 'BROODER'].includes(status) &&
+    (!nextBatch.incubator_id || !nextBatch.set_date || !nextBatch.expected_hatch_date)
+  ) {
+    return {
+      success: false,
+      error: 'Assign an incubator, set date, and expected hatch date before moving this batch into incubation.',
+    }
+  }
+
   const { error } = await supabase
     .from('egg_batches')
     .update({ 
@@ -397,13 +578,21 @@ export async function updateBatchStatus(id: string, status: string, additionalUp
     return { success: false, error: error.message || 'Failed to update status' }
   }
 
+  if (['COMPLETED', 'FAILED', 'DISCARDED', 'CANCELLED'].includes(status)) {
+    await supabase
+      .from('batch_incubator_allocations')
+      .delete()
+      .eq('batch_id', id)
+  }
+
   // Log changes
-  if (currentBatch && status !== currentBatch.status) {
+  if (status !== currentBatch.status) {
     await logBatchStatusChange(id, currentBatch.status, status)
   }
 
   revalidatePath('/batches')
   revalidatePath(`/batches/${id}`)
+  revalidatePath('/incubation')
   return { success: true }
 }
 
@@ -424,7 +613,34 @@ export async function deleteBatch(id: string) {
     return { success: false, error: 'Failed to delete batch' }
   }
 
+  await supabase
+    .from('batch_incubator_allocations')
+    .delete()
+    .eq('batch_id', id)
+
   revalidatePath('/batches')
+  revalidatePath('/incubation')
+  return { success: true }
+}
+
+export async function restoreBatch(id: string) {
+  const supabase = await createClient()
+
+  const { error } = await supabase
+    .from('egg_batches')
+    .update({
+      deleted_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', id)
+    .not('deleted_at', 'is', null)
+
+  if (error) {
+    return { success: false, error: error.message || 'Failed to restore batch' }
+  }
+
+  revalidatePath('/batches')
+  revalidatePath(`/batches/${id}`)
   return { success: true }
 }
 
@@ -433,8 +649,7 @@ export async function deleteBatch(id: string) {
  * This action is restricted to admin users and is intentionally not exposed in the UI.
  */
 export async function hardDeleteBatch(id: string) {
-  // Ensure caller is authenticated (no longer restricted to SUPER_ADMIN)
-  await requireAuth()
+  await requireRole('SUPER_ADMIN')
 
   const supabase = await createClient()
 
@@ -472,7 +687,8 @@ export async function hardDeleteBatch(id: string) {
       'batch_inspection_records',
       'batch_acquisition_costs',
       'batch_incubation_assignments',
-      'operational_costs',
+      'batch_incubator_allocations',
+      'cost_entries',
     ]
 
     for (const tbl of tablesToClear) {
@@ -506,17 +722,60 @@ export async function hardDeleteBatch(id: string) {
   }
 }
 
-export async function recordCandling(id: string,  culledCount: number) {
+async function getCurrentUserId(supabase: SupabaseServerClient) {
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  return user?.id || null
+}
+
+export async function recordCandling(id: string, culledCount: number, notes?: string) {
   const supabase = await createClient()
 
-  const { error } = await supabase
+  const { data: currentBatch, error: fetchError } = await supabase
     .from('egg_batches')
-    .update({ 
-      status: 'LOCKDOWN',
-      quantity_culled: culledCount,
-      updated_at: new Date().toISOString() 
-    })
+    .select('id, status, set_date, quantity_received, quantity_set, accepted_eggs, quantity_culled')
     .eq('id', id)
+    .single()
+
+  if (fetchError || !currentBatch) {
+    return { success: false, error: fetchError?.message || 'Batch not found' }
+  }
+
+  if (!currentBatch.set_date) {
+    return { success: false, error: 'Place the batch in an incubator before recording candling.' }
+  }
+
+  const candlingOpensAt = new Date(currentBatch.set_date)
+  candlingOpensAt.setDate(candlingOpensAt.getDate() + CANDLING_WINDOW_START_DAY)
+
+  if (new Date() < candlingOpensAt) {
+    return {
+      success: false,
+      error: `Candling is not due yet. It opens on ${candlingOpensAt.toLocaleDateString()} at ${candlingOpensAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+    }
+  }
+
+  if (['COMPLETED', 'FAILED', 'DISCARDED', 'CANCELLED'].includes(currentBatch.status || '')) {
+    return { success: false, error: 'Candling cannot be recorded for a closed batch.' }
+  }
+
+  const loadedEggs = Number(currentBatch.quantity_set ?? currentBatch.accepted_eggs ?? currentBatch.quantity_received ?? 0)
+  if (!Number.isFinite(culledCount) || culledCount < 0) {
+    return { success: false, error: 'Candling removal count cannot be negative' }
+  }
+
+  if (culledCount > loadedEggs) {
+    return { success: false, error: `Removed eggs cannot exceed ${loadedEggs.toLocaleString()} loaded eggs` }
+  }
+
+  const recordedBy = await getCurrentUserId(supabase)
+  const { error } = await (supabase as any).rpc('record_candling_atomic', {
+    p_batch_id: id,
+    p_culled_count: culledCount,
+    p_notes: notes || null,
+    p_recorded_by: recordedBy,
+  })
 
   if (error) {
     return { success: false, error: error.message || 'Failed to record candling' }
@@ -524,28 +783,104 @@ export async function recordCandling(id: string,  culledCount: number) {
 
   revalidatePath('/batches')
   revalidatePath(`/batches/${id}`)
+  revalidatePath('/incubation')
+  revalidatePath('/alerts')
   return { success: true }
 }
 
-export async function recordHatch(id: string, hatchedCount: number) {
+export async function moveBatchToHatcher(id: string, notes?: string) {
   const supabase = await createClient()
 
-  const { error } = await supabase
+  const { data: currentBatch, error: fetchError } = await supabase
     .from('egg_batches')
-    .update({ 
-      status: 'COMPLETED',
-      quantity_hatched: hatchedCount,
-      actual_hatch_date: new Date().toISOString().split('T')[0],
-      updated_at: new Date().toISOString() 
-    })
+    .select('id, status, incubator_id, set_date, expected_hatch_date')
     .eq('id', id)
+    .single()
+
+  if (fetchError || !currentBatch) {
+    return { success: false, error: fetchError?.message || 'Batch not found' }
+  }
+
+  if (!currentBatch.incubator_id || !currentBatch.set_date || !currentBatch.expected_hatch_date) {
+    return { success: false, error: 'Place the batch in an incubator before moving it to hatch prep.' }
+  }
+
+  const lockdownOpensAt = new Date(currentBatch.set_date)
+  lockdownOpensAt.setDate(lockdownOpensAt.getDate() + LOCKDOWN_DAY)
+
+  if (new Date() < lockdownOpensAt) {
+    return {
+      success: false,
+      error: `Hatch prep is not due yet. It opens on ${lockdownOpensAt.toLocaleDateString()} at ${lockdownOpensAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.`,
+    }
+  }
+
+  const recordedBy = await getCurrentUserId(supabase)
+  const { error } = await (supabase as any).rpc('move_batch_to_hatcher_atomic', {
+    p_batch_id: id,
+    p_notes: notes || null,
+    p_recorded_by: recordedBy,
+  })
+
+  if (error) {
+    return { success: false, error: error.message || 'Failed to move batch to hatch prep' }
+  }
+
+  if (currentBatch.status !== 'HATCHER') {
+    await logBatchStatusChange(id, currentBatch.status, 'HATCHER')
+  }
+
+  revalidatePath('/batches')
+  revalidatePath(`/batches/${id}`)
+  revalidatePath('/incubation')
+  revalidatePath('/alerts')
+  return { success: true }
+}
+
+export async function recordHatch(id: string, hatchedCount: number, finalCulledCount = 0, notes?: string) {
+  const supabase = await createClient()
+
+  const { data: currentBatch, error: fetchError } = await supabase
+    .from('egg_batches')
+    .select('id, status')
+    .eq('id', id)
+    .single()
+
+  if (fetchError || !currentBatch) {
+    return { success: false, error: fetchError?.message || 'Batch not found' }
+  }
+
+  if (!Number.isFinite(hatchedCount) || hatchedCount < 0) {
+    return { success: false, error: 'Hatched count cannot be negative' }
+  }
+
+  if (!Number.isFinite(finalCulledCount) || finalCulledCount < 0) {
+    return { success: false, error: 'Final culled count cannot be negative' }
+  }
+
+  const recordedBy = await getCurrentUserId(supabase)
+  const { error } = await (supabase as any).rpc('record_hatch_atomic', {
+    p_batch_id: id,
+    p_hatched_count: hatchedCount,
+    p_final_culled_count: finalCulledCount,
+    p_notes: notes || null,
+    p_recorded_by: recordedBy,
+  })
 
   if (error) {
     return { success: false, error: error.message || 'Failed to record hatch' }
   }
 
+  if (currentBatch.status !== 'COMPLETED') {
+    await logBatchStatusChange(id, currentBatch.status, 'COMPLETED')
+  }
+
   revalidatePath('/batches')
   revalidatePath(`/batches/${id}`)
+  revalidatePath('/incubation')
+  revalidatePath('/dashboard')
+  revalidatePath('/orders')
+  revalidatePath('/alerts')
   return { success: true }
 }
 
@@ -555,6 +890,60 @@ const operationalCostSchema = z.object({
   description: z.string().min(1, 'Description is required'),
   amount: z.number().positive('Amount must be greater than 0'),
 })
+
+const operationalCostCategoryMap: Record<
+  z.infer<typeof operationalCostSchema>['category'],
+  { name: string; expenseType: string }
+> = {
+  ELECTRICITY: { name: 'Electricity', expenseType: 'ELECTRICITY' },
+  GENERATOR_FUEL: { name: 'Generator Fuel', expenseType: 'FUEL' },
+  LABOR: { name: 'Labor', expenseType: 'LABOR' },
+  VACCINATION: { name: 'Vaccination', expenseType: 'VACCINE' },
+  MAINTENANCE: { name: 'Maintenance', expenseType: 'MAINTENANCE' },
+  PACKAGING: { name: 'Packaging', expenseType: 'OTHER' },
+  TRANSPORT: { name: 'Transport / Distribution', expenseType: 'TRANSPORT' },
+  MEDICATION: { name: 'Medication', expenseType: 'MEDICINE' },
+  OTHER: { name: 'Other Operational Cost', expenseType: 'OTHER' },
+}
+
+async function findOrCreateExpenseCategory(
+  supabase: SupabaseServerClient,
+  tenantId: string | null,
+  category: z.infer<typeof operationalCostSchema>['category']
+) {
+  const categoryInfo = operationalCostCategoryMap[category]
+  let query = supabase
+    .from('expense_categories')
+    .select('id')
+    .eq('name', categoryInfo.name)
+    .is('deleted_at', null)
+    .limit(1)
+
+  query = tenantId ? query.eq('tenant_id', tenantId) : query.is('tenant_id', null)
+
+  const { data: existingCategories, error: fetchError } = await query
+  if (fetchError) return { error: fetchError.message }
+
+  const existingCategory = existingCategories?.[0]
+  if (existingCategory?.id) return { id: existingCategory.id }
+
+  const { data: createdCategory, error: createError } = await supabase
+    .from('expense_categories')
+    .insert({
+      tenant_id: tenantId,
+      name: categoryInfo.name,
+      expense_type: categoryInfo.expenseType,
+      is_active: true,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      sync_version: 1,
+    })
+    .select('id')
+    .single()
+
+  if (createError) return { error: createError.message }
+  return { id: createdCategory.id }
+}
 
 export async function addOperationalCost(formData: FormData) {
   const result = operationalCostSchema.safeParse({
@@ -569,10 +958,29 @@ export async function addOperationalCost(formData: FormData) {
   }
 
   const supabase = await createClient()
+  const profileResult = await ensureUserProfile(supabase)
+  if ('error' in profileResult) {
+    return { success: false, error: profileResult.error }
+  }
 
-  const { data: costRecord, error } = await supabase.from('operational_costs').insert({
-    ...result.data,
-    created_at: new Date().toISOString()
+  const profile = profileResult.profile
+  const tenantId = (profile as any)?.tenant_id || null
+  const categoryResult = await findOrCreateExpenseCategory(supabase, tenantId, result.data.category)
+  if ('error' in categoryResult) {
+    return { success: false, error: categoryResult.error }
+  }
+
+  const { data: costRecord, error } = await supabase.from('cost_entries').insert({
+    tenant_id: tenantId,
+    category_id: categoryResult.id,
+    batch_id: result.data.batch_id,
+    amount: result.data.amount,
+    description: result.data.description,
+    incurred_at: new Date().toISOString(),
+    recorded_by: profile?.id || null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    sync_version: 1,
   }).select().single()
 
   if (error) {

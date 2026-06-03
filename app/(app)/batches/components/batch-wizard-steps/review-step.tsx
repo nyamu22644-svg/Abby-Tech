@@ -1,13 +1,58 @@
 'use client'
 
 import { Card } from '@/components/ui/card'
-import { Badge } from '@/components/ui/badge'
 import { CheckCircle2 } from 'lucide-react'
+import type { ReactNode } from 'react'
 import type { CompleteBatchWorkflow } from '@/types/batch-workflow.types'
 
 interface ReviewStepProps {
   workflow: CompleteBatchWorkflow
   photoCount: number
+}
+
+interface ReviewSectionProps {
+  title: string
+  children: ReactNode
+}
+
+function ReviewSection({ title, children }: ReviewSectionProps) {
+  return (
+    <Card className="rounded-card border border-border bg-card p-4 shadow-[var(--shadow-card)]">
+      <div className="mb-3 flex items-center gap-2">
+        <CheckCircle2 className="h-4 w-4 text-success" />
+        <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+      </div>
+      {children}
+    </Card>
+  )
+}
+
+function InfoItem({
+  label,
+  value,
+  emphasis = false,
+}: {
+  label: string
+  value: React.ReactNode
+  emphasis?: boolean
+}) {
+  return (
+    <div className="min-w-0">
+      <p className="text-xs font-medium text-muted-foreground">{label}</p>
+      <p className={emphasis ? 'truncate text-lg font-semibold text-primary' : 'truncate text-sm font-medium text-foreground'}>
+        {value}
+      </p>
+    </div>
+  )
+}
+
+function CurrencyRow({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="flex items-center justify-between gap-4 text-sm">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-medium tabular-nums text-foreground">KES {value.toFixed(2)}</span>
+    </div>
+  )
 }
 
 export function ReviewStep({ workflow, photoCount }: ReviewStepProps) {
@@ -33,198 +78,117 @@ export function ReviewStep({ workflow, photoCount }: ReviewStepProps) {
       : '0'
 
   return (
-    <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-4">
-        {/* Supplier Section */}
-        <Card className="p-4 border-l-4 border-l-blue-500">
-          <div className="flex items-start justify-between mb-3">
-            <h3 className="font-semibold text-sm text-foreground flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-blue-500" />
-              Supplier Information
-            </h3>
+    <div className="space-y-4">
+      <ReviewSection title="Supplier Information">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <InfoItem label="Supplier" value={workflow.supplier.supplierName} />
+          <InfoItem label="Contact" value={workflow.supplier.contactPerson || '-'} />
+          <InfoItem label="Phone" value={workflow.supplier.phone || '-'} />
+          <InfoItem label="Invoice" value={workflow.supplier.invoiceNumber || '-'} />
+          <div className="sm:col-span-2">
+            <InfoItem label="Location" value={workflow.supplier.location || '-'} />
           </div>
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <p className="text-xs text-muted-foreground">Supplier</p>
-              <p className="font-medium">{workflow.supplier.supplierName}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Contact</p>
-              <p className="font-medium">{workflow.supplier.contactPerson}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Phone</p>
-              <p className="font-medium">{workflow.supplier.phone}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Invoice</p>
-              <p className="font-medium">{workflow.supplier.invoiceNumber}</p>
-            </div>
-            <div className="col-span-2">
-              <p className="text-xs text-muted-foreground">Location</p>
-              <p className="font-medium">{workflow.supplier.location}</p>
-            </div>
-          </div>
-        </Card>
+        </div>
+      </ReviewSection>
 
-        {/* Reception Section */}
-        <Card className="p-4 border-l-4 border-l-cyan-500">
-          <div className="flex items-start justify-between mb-3">
-            <h3 className="font-semibold text-sm text-foreground flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-cyan-500" />
-              Reception Details
-            </h3>
-          </div>
-          <div className="grid grid-cols-2 gap-3 text-sm">
-            <div>
-              <p className="text-xs text-muted-foreground">Date Received</p>
-              <p className="font-medium">
-                {new Date(workflow.reception.dateReceived).toLocaleString()}
-              </p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Received By</p>
-              <p className="font-medium">{workflow.reception.receivedBy}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Breed Type</p>
-              <p className="font-medium">{workflow.reception.breedType}</p>
-            </div>
-            <div>
-              <p className="text-xs text-muted-foreground">Total Eggs</p>
-              <p className="font-medium text-lg text-blue-600 dark:text-blue-400">
-                {workflow.reception.totalEggsReceived}
-              </p>
-            </div>
-          </div>
-        </Card>
+      <ReviewSection title="Reception Details">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <InfoItem label="Date Received" value={new Date(workflow.reception.dateReceived).toLocaleString()} />
+          <InfoItem label="Received By" value={workflow.reception.receivedByName} />
+          <InfoItem label="Breed Type" value={workflow.reception.breedType} />
+          <InfoItem label="Total Eggs" value={workflow.reception.totalEggsReceived.toLocaleString()} emphasis />
+        </div>
+      </ReviewSection>
 
-        {/* Inspection Section */}
-        <Card className="p-4 border-l-4 border-l-amber-500">
-          <div className="flex items-start justify-between mb-3">
-            <h3 className="font-semibold text-sm text-foreground flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-amber-500" />
-              Quality Inspection Results
-            </h3>
-          </div>
-          <div className="space-y-3">
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <p className="text-xs text-muted-foreground">Cracked Eggs</p>
-                <p className="font-medium text-lg">{workflow.inspection.crackedEggs}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Dirty Eggs</p>
-                <p className="font-medium text-lg">{workflow.inspection.dirtyEggs}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Other Rejected</p>
-                <p className="font-medium text-lg">{workflow.inspection.rejectedEggs}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Rejection Rate</p>
-                <p className="font-medium text-lg">{rejectionRate}%</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Inspection Photos</p>
-                <p className="font-medium text-lg">{photoCount}</p>
-              </div>
-            </div>
-            <div className="bg-gradient-to-r from-emerald-500/10 to-teal-500/10 border border-emerald-500/20 rounded p-3">
-              <p className="text-xs text-muted-foreground">Accepted Eggs (For Incubation)</p>
-              <p className="font-bold text-2xl text-emerald-600 dark:text-emerald-400">
-                {workflow.inspection.acceptedEggs || 0}
-              </p>
-            </div>
-          </div>
-        </Card>
+      <ReviewSection title="Quality Inspection Results">
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <InfoItem label="Cracked" value={workflow.inspection.crackedEggs.toLocaleString()} />
+          <InfoItem label="Dirty" value={workflow.inspection.dirtyEggs.toLocaleString()} />
+          <InfoItem label="Rejected" value={workflow.inspection.rejectedEggs.toLocaleString()} />
+          <InfoItem label="Rejection Rate" value={`${rejectionRate}%`} />
+          <InfoItem label="Photos" value={photoCount.toLocaleString()} />
+          <InfoItem label="Accepted Eggs" value={(workflow.inspection.acceptedEggs || 0).toLocaleString()} emphasis />
+        </div>
+      </ReviewSection>
 
-        {/* Financial Section */}
-        <Card className="p-4 border-l-4 border-l-violet-500">
-          <div className="flex items-start justify-between mb-3">
-            <h3 className="font-semibold text-sm text-foreground flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-violet-500" />
-              Acquisition Costs
-            </h3>
-          </div>
-          <div className="space-y-2 text-sm">
-            <div className="flex justify-between text-muted-foreground">
-              <span>Egg Purchase</span>
-              <span className="font-medium">KES {workflow.costs.eggPurchaseCost.toFixed(2)}</span>
+      <ReviewSection title="Acquisition Costs">
+        <div className="space-y-2">
+          <CurrencyRow label="Egg Purchase" value={workflow.costs.eggPurchaseCost} />
+          <CurrencyRow label="Transport" value={workflow.costs.transportCost} />
+          <CurrencyRow label="Loading / Offloading" value={workflow.costs.loadingOffloadingCost} />
+          <CurrencyRow label="Miscellaneous" value={workflow.costs.miscellaneousCost} />
+          <div className="mt-3 grid grid-cols-1 gap-3 border-t border-border pt-3 sm:grid-cols-2">
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Total Cost</p>
+              <p className="text-lg font-semibold tabular-nums text-foreground">KES {totalCost.toFixed(2)}</p>
             </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Transport</span>
-              <span className="font-medium">KES {workflow.costs.transportCost.toFixed(2)}</span>
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Loading/Offloading</span>
-              <span className="font-medium">
-                KES {workflow.costs.loadingOffloadingCost.toFixed(2)}
-              </span>
-            </div>
-            <div className="flex justify-between text-muted-foreground">
-              <span>Miscellaneous</span>
-              <span className="font-medium">
-                KES {workflow.costs.miscellaneousCost.toFixed(2)}
-              </span>
-            </div>
-            <div className="border-t border-input pt-2 mt-2 flex justify-between font-bold">
-              <span>Total Cost</span>
-              <span className="text-violet-600 dark:text-violet-400">
-                KES {totalCost.toFixed(2)}
-              </span>
-            </div>
-            <div className="bg-gradient-to-r from-orange-500/10 to-yellow-500/10 border border-orange-500/20 rounded p-2 mt-2">
-              <p className="text-xs text-muted-foreground">Cost per Accepted Egg</p>
-              <p className="font-bold text-lg text-orange-600 dark:text-orange-400">
-                KES {costPerEgg.toFixed(2)}
-              </p>
+            <div>
+              <p className="text-xs font-medium text-muted-foreground">Cost per Accepted Egg</p>
+              <p className="text-lg font-semibold tabular-nums text-primary">KES {costPerEgg.toFixed(2)}</p>
             </div>
           </div>
-        </Card>
+        </div>
+      </ReviewSection>
 
-        {/* Incubation Section (if assigned) */}
-        {workflow.incubationAssignment && (
-          <Card className="p-4 border-l-4 border-l-green-500">
-            <div className="flex items-start justify-between mb-3">
-              <h3 className="font-semibold text-sm text-foreground flex items-center gap-2">
-                <CheckCircle2 className="w-4 h-4 text-green-500" />
-                Incubation Assignment
-              </h3>
-            </div>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div>
-                <p className="text-xs text-muted-foreground">Incubator</p>
-                <p className="font-medium">{workflow.incubationAssignment.incubatorId}</p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Technician</p>
-                <p className="font-medium">
-                  {workflow.incubationAssignment.responsibleTechnician || '—'}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Set Date</p>
-                <p className="font-medium">
-                  {new Date(workflow.incubationAssignment.setDate).toLocaleString()}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-muted-foreground">Expected Hatch</p>
-                <p className="font-medium">
-                  {new Date(workflow.incubationAssignment.expectedHatchDate).toLocaleString()}
-                </p>
-              </div>
-            </div>
-          </Card>
-        )}
-      </div>
+      {workflow.incubationAssignment && (
+        <ReviewSection title="Incubator Placement">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <InfoItem
+              label="Incubator"
+              value={workflow.incubationAssignment.incubatorName || workflow.incubationAssignment.incubatorId}
+            />
+            <InfoItem
+              label="Technician"
+              value={
+                workflow.incubationAssignment.responsibleTechnicianName ||
+                workflow.incubationAssignment.responsibleTechnician ||
+                '-'
+              }
+            />
+            <InfoItem
+              label="Actual Set Date"
+              value={new Date(workflow.incubationAssignment.setDate).toLocaleString()}
+            />
+            <InfoItem
+              label="Expected Hatch"
+              value={new Date(workflow.incubationAssignment.expectedHatchDate).toLocaleString()}
+            />
+          </div>
 
-      {/* Summary */}
-      <div className="bg-gradient-to-r from-primary/10 to-primary/5 border border-primary/20 rounded-lg p-4">
-        <p className="text-sm text-foreground font-medium">Ready to Create Batch</p>
-        <p className="text-xs text-muted-foreground mt-2">
-          All information has been verified. Click "Create Batch" to save this batch and begin tracking.
+          {workflow.incubationAssignment.placementSummary && (
+            <p className="mt-3 text-xs text-muted-foreground">
+              {workflow.incubationAssignment.placementSummary}
+            </p>
+          )}
+
+          {workflow.incubationAssignment.allocations && workflow.incubationAssignment.allocations.length > 0 && (
+            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {workflow.incubationAssignment.allocations.map((slot) => (
+                <div
+                  key={`${slot.columnNumber}-${slot.rowNumber}`}
+                  className="rounded-button border border-border bg-background px-3 py-2"
+                >
+                  <p className="text-xs text-muted-foreground">
+                    Unit {slot.columnNumber}, Tray {slot.rowNumber}
+                  </p>
+                  <p className="text-sm font-semibold text-foreground">
+                    {slot.eggsAllocated} eggs loaded
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    Capacity {slot.slotCapacity}
+                  </p>
+                </div>
+              ))}
+            </div>
+          )}
+        </ReviewSection>
+      )}
+
+      <div className="rounded-card border border-primary/20 bg-primary/10 p-4">
+        <p className="text-sm font-semibold text-foreground">Ready to Create Batch</p>
+        <p className="mt-1 text-xs text-muted-foreground">
+          All information has been verified. Create Batch will save the supplier, inspection,
+          costs, and placement data for use across the system.
         </p>
       </div>
     </div>

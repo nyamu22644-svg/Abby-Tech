@@ -2,8 +2,69 @@
 // Production helpers for authentication and authorization
 
 import { createClient } from '@/lib/supabase/server';
-import { UserProfile } from '@/types/security.types';
+import { UserProfile, UserRole } from '@/types/security.types';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
+
+type RawProfile = Record<string, any>;
+
+function normalizeRoleCode(roleCode: string | null | undefined): UserRole {
+  const normalized = String(roleCode || 'FARM_WORKER').toUpperCase();
+
+  if (normalized === 'SUPER_ADMIN') return 'SUPER_ADMIN';
+  if (normalized === 'MANAGER') return 'MANAGER';
+  if (normalized === 'TECHNICIAN') return 'TECHNICIAN';
+  if (normalized === 'WORKER' || normalized === 'FARM_WORKER') return 'FARM_WORKER';
+
+  return 'FARM_WORKER';
+}
+
+function toUserProfile(profile: RawProfile, roleCode?: string | null, roleName?: string | null): UserProfile {
+  const firstName = profile.first_name || null;
+  const lastName = profile.last_name || null;
+  const fullName = [firstName, lastName].filter(Boolean).join(' ') || null;
+  const status = profile.status || 'INVITED';
+
+  return {
+    ...profile,
+    tenant_id: profile.tenant_id || null,
+    first_name: firstName,
+    last_name: lastName,
+    full_name: fullName,
+    role: normalizeRoleCode(roleCode || profile.role),
+    role_name: roleName || null,
+    primary_role_id: profile.primary_role_id || null,
+    phone: profile.phone || null,
+    status,
+    active: status === 'ACTIVE',
+  } as UserProfile;
+}
+
+async function resolveProfileRole(supabase: Awaited<ReturnType<typeof createClient>>, profile: RawProfile) {
+  if (profile.primary_role_id) {
+    const { data: role } = await supabase
+      .from('roles')
+      .select('role_code, role_name')
+      .eq('id', profile.primary_role_id)
+      .maybeSingle();
+
+    if (role?.role_code) {
+      return role;
+    }
+  }
+
+  const { data: userRole } = await supabase
+    .from('user_roles')
+    .select('roles(role_code, role_name)')
+    .eq('user_id', profile.id)
+    .eq('is_primary', true)
+    .maybeSingle();
+
+  const joinedRole = Array.isArray((userRole as any)?.roles)
+    ? (userRole as any).roles[0]
+    : (userRole as any)?.roles;
+
+  return joinedRole || null;
+}
 
 /**
  * Get the current authenticated user's profile with role
@@ -30,7 +91,8 @@ export async function getCurrentUserProfile(): Promise<UserProfile | null> {
       return null;
     }
 
-    return profile as UserProfile;
+    const joinedRole = await resolveProfileRole(supabase, profile);
+    return toUserProfile(profile, joinedRole?.role_code, joinedRole?.role_name);
   } catch (err) {
     console.error('Error getting current user profile:', err);
     return null;
@@ -106,7 +168,8 @@ export async function getUserProfileById(userId: string): Promise<UserProfile | 
       return null;
     }
 
-    return profile as UserProfile;
+    const primaryRole = await resolveProfileRole(supabase, profile);
+    return toUserProfile(profile, primaryRole?.role_code, primaryRole?.role_name);
   } catch (err) {
     console.error('Error getting user profile by ID:', err);
     return null;
@@ -132,7 +195,10 @@ export async function listUserProfiles(): Promise<UserProfile[]> {
       return [];
     }
 
-    return (profiles || []) as UserProfile[];
+    return await Promise.all((profiles || []).map(async (profile: any) => {
+      const primaryRole = await resolveProfileRole(supabase, profile);
+      return toUserProfile(profile, primaryRole?.role_code, primaryRole?.role_name);
+    }));
   } catch (err) {
     console.error('Error listing user profiles:', err);
     return [];
@@ -148,7 +214,7 @@ export async function isUserActive(userId: string): Promise<boolean> {
 
     const { data, error } = await supabase
       .from('user_profiles')
-      .select('active')
+      .select('status')
       .eq('id', userId)
       .single();
 
@@ -156,7 +222,7 @@ export async function isUserActive(userId: string): Promise<boolean> {
       return false;
     }
 
-    return data.active === true;
+    return data.status === 'ACTIVE';
   } catch (err) {
     console.error('Error checking user active status:', err);
     return false;

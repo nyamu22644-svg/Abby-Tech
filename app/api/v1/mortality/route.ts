@@ -12,7 +12,8 @@ import {
   getSearchParams,
   paginatedResponse,
 } from '@/lib/api-response';
-import { requireRole, requireAuth, canLogOperationalData } from '@/lib/rbac';
+import { canLogOperationalData } from '@/lib/rbac';
+import { requireAuth } from '@/lib/auth';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
 import { logMortalityLogged } from '@/lib/audit';
 
@@ -88,68 +89,26 @@ export const POST = apiHandler(async (req: NextRequest) => {
 
   const supabase = await createClient();
 
-  // Verify batch exists
-  const { data: batch, error: batchError } = await supabase
-    .from('egg_batches')
-    .select('quantity_received, total_initial_cost, mortality_count, total_financial_loss')
-    .eq('id', validatedData.batch_id)
-    .is('deleted_at', null)
-    .single();
-
-  if (batchError || !batch) {
-    throw new ApiError(ERROR_CODES.NOT_FOUND, 'Batch not found', 404);
-  }
-
-  // Calculate financial loss
-  const { data: opCosts } = await supabase
-    .from('operational_costs')
-    .select('amount')
-    .eq('batch_id', validatedData.batch_id);
-
-  const totalOpCosts = opCosts
-    ? opCosts.reduce((sum, cost) => sum + Number(cost.amount), 0)
-    : 0;
-  const totalBaseCost = Number(batch.total_initial_cost || 0) + totalOpCosts;
-  const divisor = batch.quantity_received > 0 ? batch.quantity_received : 1;
-  const costPerChick = totalBaseCost / divisor;
-  const estimatedLoss = costPerChick * validatedData.count;
-
-  // Insert mortality event
-  const { data: newEvent, error } = await supabase
-    .from('mortality_events')
-    .insert({
-      batch_id: validatedData.batch_id,
-      stage: validatedData.stage,
-      cause: validatedData.cause,
-      count: validatedData.count,
-      notes: validatedData.notes || null,
-      photo_url: validatedData.photo_url || null,
-      estimated_financial_loss: estimatedLoss,
-      recorded_by: user.id,
-      recorded_at: new Date().toISOString(),
-    })
-    .select()
-    .single();
+  const { data: results, error } = await (supabase as any).rpc('log_mortality_event_atomic', {
+    p_batch_id: validatedData.batch_id,
+    p_stage: validatedData.stage,
+    p_cause: validatedData.cause,
+    p_count: validatedData.count,
+    p_notes: validatedData.notes || null,
+    p_photo_url: validatedData.photo_url || null,
+    p_recorded_by: user.id,
+  });
 
   if (error) {
     throw new ApiError(ERROR_CODES.INTERNAL_ERROR, error.message, 500);
   }
 
-  // Update batch totals
-  const newMortalityCount = (batch.mortality_count || 0) + validatedData.count;
-  const newTotalLoss = Number(batch.total_financial_loss || 0) + estimatedLoss;
+  const result = Array.isArray(results) ? results[0] : results;
+  if (!result?.event_id) {
+    throw new ApiError(ERROR_CODES.INTERNAL_ERROR, 'Mortality event was not returned', 500);
+  }
 
-  await supabase
-    .from('egg_batches')
-    .update({
-      mortality_count: newMortalityCount,
-      total_financial_loss: newTotalLoss,
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', validatedData.batch_id);
+  await logMortalityLogged(result.event_id, validatedData.batch_id, validatedData.count, validatedData.cause);
 
-  // Log the mortality event
-  await logMortalityLogged(newEvent.id, validatedData.batch_id, validatedData.count, validatedData.cause);
-
-  return successResponse(newEvent, 201);
+  return successResponse(result, 201);
 });

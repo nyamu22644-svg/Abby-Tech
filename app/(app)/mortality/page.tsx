@@ -1,33 +1,41 @@
-import { createClient } from '@/lib/supabase/server'
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { LogMortalityDialog } from './components/log-mortality-dialog'
+import { Metadata } from 'next'
+import type { ComponentType } from 'react'
+import { AlertTriangle, ArrowUpRight, Banknote, CalendarDays, Skull, TrendingDown } from 'lucide-react'
 import { format } from 'date-fns'
+
+import { Card } from '@/components/ui/card'
+import { createClient } from '@/lib/supabase/server'
+import { cn } from '@/lib/utils'
+import { LogMortalityDialog } from './components/log-mortality-dialog'
+
+export const metadata: Metadata = {
+  title: 'Mortality | Smart Hatchery OS',
+  description: 'Operational loss tracking and financial impact analysis.',
+}
 
 export default async function MortalityDashboard() {
   const supabase = await createClient()
 
-  // Fetch active batches for the dropdown
-  const { data: batches } = await supabase
-    .from('egg_batches')
-    .select('id, batch_number')
-    .in('status', ['LOGGED', 'SETTER', 'HATCHER', 'BROODER'])
-    .order('created_at', { ascending: false })
-
-  // Fetch recent mortality events
-  const { data: events } = await supabase
-    .from('mortality_events')
-    .select(`
-      *,
-      egg_batches ( batch_number )
-    `)
-    .order('recorded_at', { ascending: false })
+  const [{ data: batches }, { data: events }] = await Promise.all([
+    supabase
+      .from('egg_batches')
+      .select('id, batch_number')
+      .in('status', ['LOGGED', 'SETTER', 'HATCHER', 'BROODER'])
+      .order('created_at', { ascending: false }),
+    supabase
+      .from('mortality_events')
+      .select(`
+        *,
+        egg_batches ( batch_number )
+      `)
+      .order('recorded_at', { ascending: false }),
+  ])
 
   const typedEvents = events || []
 
-  // Analytics Calculations
   const today = new Date()
   today.setHours(0, 0, 0, 0)
-  
+
   const weekAgo = new Date()
   weekAgo.setDate(weekAgo.getDate() - 7)
   weekAgo.setHours(0, 0, 0, 0)
@@ -35,173 +43,248 @@ export default async function MortalityDashboard() {
   let mortalityToday = 0
   let mortalityThisWeek = 0
   let totalLoss = 0
+  let totalBirdLoss = 0
 
   const lossByStage: Record<string, number> = {}
   const lossByBatch: Record<string, number> = {}
 
-  typedEvents.forEach(evt => {
+  typedEvents.forEach((evt) => {
+    const eventCount = Number(evt.count || 0)
     const evtDate = new Date(evt.recorded_at)
-    if (evtDate >= today) mortalityToday += evt.count
-    if (evtDate >= weekAgo) mortalityThisWeek += evt.count
-    
-    totalLoss += (evt.estimated_financial_loss || 0)
+    if (evtDate >= today) mortalityToday += eventCount
+    if (evtDate >= weekAgo) mortalityThisWeek += eventCount
 
-    lossByStage[evt.stage] = (lossByStage[evt.stage] || 0) + evt.count
+    totalBirdLoss += eventCount
+    totalLoss += Number(evt.estimated_financial_loss || 0)
 
-    // Extract batch_number safely
-    let bName = 'Unknown'
-    if (evt.egg_batches) {
-        if (Array.isArray(evt.egg_batches)) {
-            bName = evt.egg_batches[0]?.batch_number || 'Unknown'
-        } else {
-            bName = evt.egg_batches.batch_number || 'Unknown'
-        }
-    }
-    lossByBatch[bName] = (lossByBatch[bName] || 0) + evt.count
+    lossByStage[evt.stage] = (lossByStage[evt.stage] || 0) + eventCount
+    lossByBatch[getBatchName(evt)] = (lossByBatch[getBatchName(evt)] || 0) + eventCount
   })
 
-  // Find highest loss batch
-  let highestLossBatchName = 'None'
-  let highestLossCount = 0
-  for (const [bName, count] of Object.entries(lossByBatch)) {
-    if (count > highestLossCount) {
-      highestLossCount = count
-      highestLossBatchName = bName
-    }
-  }
+  const highestLoss = Object.entries(lossByBatch).sort((a, b) => b[1] - a[1])[0] || ['None', 0]
+  const highestLossBatchName = highestLoss[0]
+  const highestLossCount = highestLoss[1]
+  const maxStageLoss = Math.max(...Object.values(lossByStage), 0)
+
+  const kpis = [
+    {
+      label: 'Mortality Today',
+      value: mortalityToday.toLocaleString(),
+      unit: 'birds',
+      footer: 'Recorded today',
+      icon: Skull,
+      tone: mortalityToday > 0 ? 'danger' : 'success',
+    },
+    {
+      label: 'This Week',
+      value: mortalityThisWeek.toLocaleString(),
+      unit: 'birds',
+      footer: 'Past 7 days',
+      icon: CalendarDays,
+      tone: mortalityThisWeek > 0 ? 'warning' : 'success',
+    },
+    {
+      label: 'Highest Loss Batch',
+      value: highestLossBatchName,
+      unit: '',
+      footer: `${highestLossCount.toLocaleString()} total losses`,
+      icon: TrendingDown,
+      tone: highestLossCount > 0 ? 'warning' : 'success',
+    },
+    {
+      label: 'Est. Financial Loss',
+      value: `KES ${totalLoss.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`,
+      unit: '',
+      footer: `${totalBirdLoss.toLocaleString()} total birds`,
+      icon: Banknote,
+      tone: totalLoss > 0 ? 'danger' : 'success',
+    },
+  ] as const
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-12 animate-in fade-in zoom-in-95 duration-200">
-      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+    <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
+      <section className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl font-bold tracking-tight">Mortality Intelligence</h1>
-          <p className="text-muted-foreground mt-1">
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Mortality Intelligence</h1>
+          <p className="mt-0.5 text-[13px] text-muted-foreground">
             Operational loss tracking and financial impact analysis.
           </p>
         </div>
         <LogMortalityDialog batches={batches || []} />
-      </div>
+      </section>
 
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
-        <Card className="border-border shadow-sm flex flex-col justify-between bg-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Mortality Today</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{mortalityToday} birds</div>
-            <p className="text-xs text-muted-foreground mt-1">Recorded past 24h</p>
-          </CardContent>
-        </Card>
+      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {kpis.map((kpi) => (
+          <MetricCard key={kpi.label} {...kpi} />
+        ))}
+      </section>
 
-        <Card className="border-border shadow-sm flex flex-col justify-between bg-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Mortality This Week</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold">{mortalityThisWeek} birds</div>
-            <p className="text-xs text-muted-foreground mt-1">Recorded past 7 days</p>
-          </CardContent>
-        </Card>
-
-        <Card className="border-border shadow-sm flex flex-col justify-between bg-card">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Highest Loss Batch</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold truncate" title={highestLossBatchName}>
-              {highestLossBatchName}
+      <section className="grid grid-cols-1 gap-4 xl:grid-cols-[1.08fr_1fr]">
+        <Card className="overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border bg-muted/10 px-5 py-3.5">
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Recent Mortality Events</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">Latest recorded operational losses</p>
             </div>
-            <p className="text-xs text-muted-foreground mt-1">{highestLossCount} total losses</p>
-          </CardContent>
-        </Card>
+            <span className="rounded-button bg-destructive/10 px-2.5 py-1 text-xs font-semibold text-destructive">
+              {typedEvents.length.toLocaleString()} records
+            </span>
+          </div>
 
-        <Card className="border-border shadow-sm flex flex-col justify-between bg-card border-destructive/20">
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium text-destructive">Est. Financial Loss</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-destructive">
-              KES {totalLoss.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: 0})}
-            </div>
-            <p className="text-xs text-muted-foreground mt-1 text-destructive/80">Total recorded impact</p>
-          </CardContent>
-        </Card>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2">
-        <Card className="col-span-1 shadow-sm border-border bg-card">
-          <CardHeader>
-            <CardTitle>Recent Mortality Events</CardTitle>
-          </CardHeader>
-          <CardContent>
-            {typedEvents.length === 0 ? (
-              <p className="text-sm text-muted-foreground pb-4">No mortality events recorded yet.</p>
-            ) : (
-              <div className="space-y-4">
-                {typedEvents.slice(0, 5).map((evt) => {
-                  let bName = 'Unknown'
-                  if (evt.egg_batches) {
-                      if (Array.isArray(evt.egg_batches)) {
-                          bName = evt.egg_batches[0]?.batch_number || 'Unknown'
-                      } else {
-                          bName = evt.egg_batches.batch_number || 'Unknown'
-                      }
-                  }
-                  return (
-                    <div key={evt.id} className="flex justify-between items-center bg-muted/50 p-3 rounded-lg border border-border/50">
-                      <div>
-                        <p className="font-medium text-sm">Batch: {bName}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {evt.stage} - {evt.cause}
-                        </p>
+          {typedEvents.length === 0 ? (
+            <EmptyState message="No mortality events recorded yet." />
+          ) : (
+            <div className="divide-y divide-border">
+              {typedEvents.slice(0, 8).map((evt) => (
+                <div key={evt.id} className="grid gap-3 px-5 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                      <AlertTriangle className="h-4 w-4" />
+                    </span>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-mono text-sm font-semibold text-foreground">{getBatchName(evt)}</p>
+                        <span className="rounded-button border border-border px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                          {formatLabel(evt.stage)}
+                        </span>
+                        <span className="rounded-button border border-border px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
+                          {formatLabel(evt.cause)}
+                        </span>
                       </div>
-                      <div className="text-right">
-                        <p className="text-sm font-bold text-destructive">-{evt.count}</p>
-                        <p className="text-xs text-muted-foreground">
-                          {format(new Date(evt.recorded_at), 'MMM d, HH:mm')}
-                        </p>
-                      </div>
+                      {evt.notes && (
+                        <p className="mt-1 max-w-xl truncate text-[13px] text-muted-foreground">{evt.notes}</p>
+                      )}
                     </div>
-                  )
-                })}
-              </div>
-            )}
-          </CardContent>
+                  </div>
+                  <div className="flex items-center justify-between gap-4 md:block md:text-right">
+                    <p className="text-sm font-semibold tabular-nums text-destructive">-{Number(evt.count || 0).toLocaleString()}</p>
+                    <p className="mt-0.5 text-xs text-muted-foreground">
+                      {format(new Date(evt.recorded_at), 'MMM d, HH:mm')}
+                    </p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </Card>
 
-        <Card className="col-span-1 shadow-sm border-border bg-card">
-          <CardHeader>
-            <CardTitle>Loss Volume by Stage</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-4">
-              {Object.entries(lossByStage)
+        <Card className="overflow-hidden">
+          <div className="flex items-center justify-between border-b border-border bg-muted/10 px-5 py-3.5">
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Loss Volume by Stage</h2>
+              <p className="mt-0.5 text-xs text-muted-foreground">Where losses are being recorded</p>
+            </div>
+          </div>
+
+          <div className="space-y-4 px-5 py-4">
+            {Object.keys(lossByStage).length === 0 ? (
+              <EmptyState message="No stage data available." compact />
+            ) : (
+              Object.entries(lossByStage)
                 .sort((a, b) => b[1] - a[1])
                 .map(([stage, count]) => {
-                  const max = Math.max(...Object.values(lossByStage))
-                  const percentage = ((count / max) * 100).toFixed(0)
+                  const percentage = maxStageLoss > 0 ? Math.round((count / maxStageLoss) * 100) : 0
                   return (
-                    <div key={stage} className="space-y-1">
-                      <div className="flex justify-between text-sm">
-                        <span className="font-medium">{stage}</span>
-                        <span className="text-muted-foreground">{count} birds</span>
+                    <div key={stage} className="space-y-2">
+                      <div className="flex items-center justify-between gap-3 text-sm">
+                        <span className="font-semibold text-foreground">{formatLabel(stage)}</span>
+                        <span className="text-xs font-medium tabular-nums text-muted-foreground">
+                          {count.toLocaleString()} birds
+                        </span>
                       </div>
-                      <div className="h-2 w-full bg-secondary rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-destructive transition-all" 
+                      <div className="h-2 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className="h-full rounded-full bg-destructive transition-all"
                           style={{ width: `${percentage}%` }}
                         />
                       </div>
                     </div>
                   )
-                })}
-              {Object.keys(lossByStage).length === 0 && (
-                <p className="text-sm text-muted-foreground">No data available.</p>
-              )}
-            </div>
-          </CardContent>
+                })
+            )}
+          </div>
         </Card>
-      </div>
+      </section>
     </div>
   )
+}
+
+function MetricCard({
+  label,
+  value,
+  unit,
+  footer,
+  icon: Icon,
+  tone,
+}: {
+  label: string
+  value: string
+  unit: string
+  footer: string
+  icon: ComponentType<{ className?: string }>
+  tone: 'success' | 'warning' | 'danger'
+}) {
+  const toneClasses = {
+    success: {
+      icon: 'bg-success text-white shadow-[0_12px_24px_rgba(45,212,111,0.22)]',
+      value: 'text-foreground',
+      dot: 'bg-success',
+    },
+    warning: {
+      icon: 'bg-warning text-slate-950 shadow-[0_12px_24px_rgba(251,191,36,0.24)]',
+      value: 'text-warning',
+      dot: 'bg-warning',
+    },
+    danger: {
+      icon: 'bg-destructive text-white shadow-[0_12px_24px_rgba(255,59,92,0.24)]',
+      value: 'text-destructive',
+      dot: 'bg-destructive',
+    },
+  }[tone]
+
+  return (
+    <Card className="min-h-[138px] p-[18px]">
+      <div className="flex items-start gap-3.5">
+        <div className={cn('flex h-12 w-12 shrink-0 items-center justify-center rounded-full', toneClasses.icon)}>
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13px] font-semibold text-foreground">{label}</div>
+          <div className={cn('mt-1.5 truncate text-3xl font-semibold leading-none tracking-tight tabular-nums', toneClasses.value)}>
+            {value}
+          </div>
+          {unit && <div className="mt-1 text-xs font-medium text-muted-foreground">{unit}</div>}
+        </div>
+      </div>
+      <div className="mt-3.5 flex items-center justify-between border-t border-border pt-3 text-xs font-medium text-muted-foreground">
+        <span className="inline-flex items-center gap-2">
+          <span className={cn('h-2.5 w-2.5 rounded-full', toneClasses.dot)} />
+          {footer}
+        </span>
+        <ArrowUpRight className="h-4 w-4" />
+      </div>
+    </Card>
+  )
+}
+
+function EmptyState({ message, compact = false }: { message: string; compact?: boolean }) {
+  return (
+    <div className={cn('text-center text-sm text-muted-foreground', compact ? 'py-4' : 'px-5 py-10')}>
+      {message}
+    </div>
+  )
+}
+
+function getBatchName(evt: any) {
+  if (!evt.egg_batches) return 'Unknown'
+  if (Array.isArray(evt.egg_batches)) return evt.egg_batches[0]?.batch_number || 'Unknown'
+  return evt.egg_batches.batch_number || 'Unknown'
+}
+
+function formatLabel(value?: string | null) {
+  if (!value) return '--'
+  return value
+    .toLowerCase()
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
 }

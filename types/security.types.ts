@@ -5,11 +5,17 @@ export type UserRole = 'SUPER_ADMIN' | 'MANAGER' | 'TECHNICIAN' | 'FARM_WORKER';
 
 export interface UserProfile {
   id: string;
+  tenant_id: string | null;
   email: string;
-  full_name: string | null;
+  first_name: string | null;
+  last_name: string | null;
+  full_name?: string | null;
   role: UserRole;
+  role_name?: string | null;
+  primary_role_id: string | null;
   phone: string | null;
-  active: boolean;
+  status: 'INVITED' | 'ACTIVE' | 'SUSPENDED' | 'DEACTIVATED';
+  active?: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -26,14 +32,18 @@ export type AuditActionType =
 
 export interface AuditLog {
   id: string;
+  tenant_id: string | null;
   entity_type: string;
   entity_id: string;
   action: AuditActionType;
   performed_by: string | null;
-  previous_values: Record<string, any> | null;
-  new_values: Record<string, any> | null;
-  metadata: Record<string, any> | null;
+  performed_at: string;
   created_at: string;
+  changes?: Array<{
+    field_name: string;
+    old_value: string | null;
+    new_value: string | null;
+  }>;
 }
 
 // Role-based permission definitions
@@ -56,7 +66,7 @@ export const ROLE_PERMISSIONS: Record<UserRole, {
     canDelete: ['batches', 'orders', 'customers'],
   },
   TECHNICIAN: {
-    canCreate: ['mortality', 'environmental_logs', 'operational_costs'],
+    canCreate: ['mortality', 'environmental_logs', 'cost_entries'],
     canRead: ['batches', 'orders', 'incubators', 'mortality', 'environmental_logs', 'alerts'],
     canUpdate: ['batches', 'orders', 'environmental_logs', 'alerts'],
     canDelete: [],
@@ -95,6 +105,13 @@ export interface ApiResponse<T = any> {
   metadata?: {
     timestamp: string;
     requestId: string;
+    pagination?: {
+      page: number;
+      limit: number;
+      offset: number;
+      total: number;
+      totalPages: number;
+    };
   };
 }
 

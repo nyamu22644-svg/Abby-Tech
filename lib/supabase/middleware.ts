@@ -38,7 +38,7 @@ export async function updateSession(request: NextRequest) {
     } = await supabase.auth.getUser()
 
     // Public routes that don't require authentication
-    const publicRoutes = ['/login', '/auth', '/_next', '/favicon.ico']
+    const publicRoutes = ['/login', '/auth', '/api/v1/iot', '/_next', '/favicon.ico']
     const isPublicRoute = publicRoutes.some((route) => request.nextUrl.pathname.startsWith(route))
 
     // Static file routes
