@@ -180,7 +180,7 @@ export default async function SettingsPage({ searchParams }: SettingsPageProps) 
             Configure the farm record, equipment, sensor registry, breeds, receipts, and access.
           </p>
         </div>
-        <Button render={<Link href="/incubation" />} variant="outline" className="h-9">
+        <Button render={<Link href="/incubation" />} nativeButton={false} variant="outline" className="h-9">
           Open Incubation
         </Button>
       </section>

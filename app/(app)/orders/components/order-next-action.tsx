@@ -30,6 +30,7 @@ export function OrderNextAction({
     return (
       <Button
         render={<Link href={`/orders/${orderId}`} />}
+        nativeButton={false}
         variant="outline"
         className="h-8 gap-2 rounded-button px-3 text-xs font-semibold"
       >
@@ -50,6 +51,7 @@ export function OrderNextAction({
   return (
     <Button
       render={<Link href={`/orders/${orderId}`} />}
+      nativeButton={false}
       variant="outline"
       className="h-8 gap-2 rounded-button px-3 text-xs font-semibold"
     >

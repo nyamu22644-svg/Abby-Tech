@@ -748,6 +748,7 @@ function NextBestBatchAction({
           </div>
           <Button
             render={<Link href="/incubation" />}
+            nativeButton={false}
             className="w-full gap-2 sm:w-auto"
           >
             <MapPin className="h-4 w-4" />
@@ -827,6 +828,7 @@ function NextBestBatchAction({
         action={
           <Button
             render={<Link href="/orders" />}
+            nativeButton={false}
             variant="outline"
             className="w-full gap-2 sm:w-auto"
           >
@@ -850,6 +852,7 @@ function NextBestBatchAction({
       action={
         <Button
           render={<Link href="/incubation" />}
+          nativeButton={false}
           variant="outline"
           className="w-full gap-2 sm:w-auto"
         >

@@ -4,7 +4,6 @@ import {
   AlertTriangle,
   Bell,
   Bird,
-  ChevronDown,
   Egg,
   LayoutDashboard,
   Moon,
@@ -23,6 +22,12 @@ import { usePathname } from 'next/navigation'
 import { appShell, componentStyles } from '@/lib/design/theme'
 import { cn } from '@/lib/utils'
 
+type ShellUser = {
+  displayName: string
+  roleLabel: string
+  initials: string
+} | null
+
 const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Egg Batches', href: '/batches', icon: Egg },
@@ -34,9 +39,12 @@ const navItems = [
   { label: 'Settings', href: '/settings', icon: Settings },
 ]
 
-export function OperationalLayout({ children }: { children: React.ReactNode }) {
+export function OperationalLayout({ children, currentUser }: { children: React.ReactNode; currentUser: ShellUser }) {
   const pathname = usePathname()
   const [theme, setTheme] = useState<'light' | 'dark'>('light')
+  const displayName = currentUser?.displayName || 'Signed in user'
+  const roleLabel = currentUser?.roleLabel || 'Authenticated'
+  const initials = currentUser?.initials || 'U'
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
@@ -72,13 +80,12 @@ export function OperationalLayout({ children }: { children: React.ReactNode }) {
         <div className={appShell.sidebarFooter}>
           <div className="flex items-center gap-3 rounded-card border border-white/10 bg-white/10 p-2.5">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-white/20 text-sm font-semibold text-white">
-              EN
+              {initials}
             </div>
             <div className="min-w-0 flex-1 text-sm">
-              <div className="truncate font-semibold text-white">Edwin N.</div>
-              <div className="truncate text-xs text-blue-100/80">Manager</div>
+              <div className="truncate font-semibold text-white">{displayName}</div>
+              <div className="truncate text-xs text-blue-100/80">{roleLabel}</div>
             </div>
-            <ChevronDown className="h-4 w-4 text-blue-100/70" />
           </div>
 
           <div className="mt-2 text-xs text-blue-100/70">Version 1.2.0</div>
@@ -131,9 +138,6 @@ export function OperationalLayout({ children }: { children: React.ReactNode }) {
               <div className="hidden items-center gap-2.5 lg:flex">
                 <ThemeToggle theme={theme} onToggle={toggleTheme} />
                 <NotificationButton />
-                <div className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-sm font-semibold text-white">
-                  EN
-                </div>
               </div>
             </div>
           </div>

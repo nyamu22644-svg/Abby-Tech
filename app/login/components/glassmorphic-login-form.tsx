@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { Eye, EyeOff, AlertCircle, Loader2, Wifi, WifiOff, ArrowRight } from 'lucide-react'
 import { login } from '../actions'
 import { AUTH_MESSAGES } from '@/lib/branding'
+import { createClient } from '@/lib/supabase/client'
 
 export function GlassmorphicLoginForm() {
   const router = useRouter()
@@ -43,6 +44,47 @@ export function GlassmorphicLoginForm() {
       window.removeEventListener('offline', handleOffline)
     }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function recoverInviteSessionFromHash() {
+      const hashParams = new URLSearchParams(window.location.hash.replace(/^#/, ''))
+      const accessToken = hashParams.get('access_token')
+      const refreshToken = hashParams.get('refresh_token')
+
+      if (!accessToken || !refreshToken) return
+
+      setLoading(true)
+      setIsValidating(true)
+      setLocalError(null)
+
+      const supabase = createClient()
+      const { error: sessionError } = await supabase.auth.setSession({
+        access_token: accessToken,
+        refresh_token: refreshToken,
+      })
+
+      if (cancelled) return
+
+      if (sessionError) {
+        setLocalError(sessionError.message || 'Invite session could not be verified.')
+        setLoading(false)
+        setIsValidating(false)
+        return
+      }
+
+      const next = searchParams.get('next') || '/auth/set-password'
+      router.replace(next)
+      router.refresh()
+    }
+
+    recoverInviteSessionFromHash()
+
+    return () => {
+      cancelled = true
+    }
+  }, [router, searchParams])
 
   const handleEmailChange = (value: string) => {
     setEmail(value)
