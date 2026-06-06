@@ -12,6 +12,7 @@ import { cn } from '@/lib/utils'
 
 interface ReceptionInfoStepProps {
   initialData: BatchReceptionInfo
+  breedOptions?: string[]
   onComplete: (data: BatchReceptionInfo) => void
   formId: string
 }
@@ -38,7 +39,12 @@ function toLocalInputValue(value?: Date) {
   return date.toISOString().slice(0, 16)
 }
 
-export function ReceptionInfoStep({ initialData, onComplete, formId }: ReceptionInfoStepProps) {
+export function ReceptionInfoStep({
+  initialData,
+  breedOptions = BREED_OPTIONS,
+  onComplete,
+  formId,
+}: ReceptionInfoStepProps) {
   const [data, setData] = useState<BatchReceptionInfo>(initialData)
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [users, setUsers] = useState<UserProfileOption[]>([])
@@ -180,19 +186,21 @@ export function ReceptionInfoStep({ initialData, onComplete, formId }: Reception
           <Label htmlFor="breedType" className="text-xs font-semibold text-muted-foreground">
             Breed / Type *
           </Label>
-          <Input
+          <select
             id="breedType"
-            list="breed-type-options"
+            required
             value={data.breedType}
             onChange={(e) => setData({ ...data, breedType: e.target.value })}
-            placeholder="e.g. KARI Improved Kienyeji"
-            className={cn('h-9 bg-background text-sm', errors.breedType && 'border-destructive focus-visible:ring-destructive/20')}
-          />
-          <datalist id="breed-type-options">
-            {BREED_OPTIONS.map((breed) => (
-              <option key={breed} value={breed} />
+            className={cn(
+              'h-9 w-full rounded-input border border-input bg-background px-3 text-sm text-foreground outline-none transition-all focus:border-primary focus:ring-4 focus:ring-primary/10',
+              errors.breedType && 'border-destructive focus-visible:ring-destructive/20'
+            )}
+          >
+            <option value="" disabled>Select breed</option>
+            {breedOptions.map((breed) => (
+              <option key={breed} value={breed}>{breed}</option>
             ))}
-          </datalist>
+          </select>
           {errors.breedType && (
             <p className="flex items-center gap-1 text-xs text-destructive">
               <AlertCircle className="h-3 w-3" />

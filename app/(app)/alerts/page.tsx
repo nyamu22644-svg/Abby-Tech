@@ -1,5 +1,6 @@
 import { Metadata } from 'next'
-import { AlertTriangle, BellRing, CheckCircle2, Egg, PackageCheck, ShieldCheck, Skull, Thermometer } from 'lucide-react'
+import Link from 'next/link'
+import { AlertTriangle, BellRing, CheckCircle2, Egg, PackageCheck, ShieldCheck, Skull, Thermometer, UsersRound } from 'lucide-react'
 
 import { Card } from '@/components/ui/card'
 import { getSystemAlerts, type SystemAlert } from '@/lib/alerts/system-alerts'
@@ -8,7 +9,7 @@ import { cn } from '@/lib/utils'
 
 export const metadata: Metadata = {
   title: 'Alerts | Smart Hatchery OS',
-  description: 'System alerts and operational warnings.',
+  description: 'Daily hatchery alerts and follow-up work.',
 }
 
 export default async function AlertsPage() {
@@ -18,28 +19,29 @@ export default async function AlertsPage() {
   const activeAlerts = systemAlerts.filter((alert) => alert.status === 'ACTIVE')
   const historyAlerts = systemAlerts.filter((alert) => alert.status !== 'ACTIVE')
   const criticalAlerts = activeAlerts.filter((alert) => alert.severity === 'CRITICAL' || alert.severity === 'HIGH')
+  const workQueue = groupAlertWork(activeAlerts)
 
   return (
     <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
       <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-xl font-semibold tracking-tight text-foreground">System Alerts</h1>
+          <h1 className="text-xl font-semibold tracking-tight text-foreground">Alerts & Follow-up</h1>
           <p className="mt-0.5 text-[13px] text-muted-foreground">
-            Incubation, batch workflow, mortality, and fulfillment warnings.
+            Clear daily actions for batches, orders, customers, and hatchery risks.
           </p>
         </div>
       </div>
 
-      <section className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-        <SummaryCard label="Active Alerts" value={activeAlerts.length} tone={activeAlerts.length > 0 ? 'danger' : 'success'} />
-        <SummaryCard label="Critical / High" value={criticalAlerts.length} tone={criticalAlerts.length > 0 ? 'danger' : 'success'} />
-        <SummaryCard label="Workflow" value={activeAlerts.filter((alert) => alert.source === 'Batch Workflow').length} tone="primary" />
-        <SummaryCard label="Total Recorded" value={systemAlerts.length} tone="primary" />
+      <section className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <SummaryCard label="Do Now" value={workQueue.doNow.length} tone={workQueue.doNow.length > 0 ? 'danger' : 'success'} />
+        <SummaryCard label="Watch Today" value={workQueue.watchToday.length} tone={workQueue.watchToday.length > 0 ? 'primary' : 'success'} />
+        <SummaryCard label="Upcoming" value={workQueue.upcoming.length} tone="primary" />
+        <SummaryCard label="Cleared" value={historyAlerts.length} tone="success" />
       </section>
 
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden rounded-card border-border bg-card shadow-[var(--shadow-card)]">
         <div className="flex items-center justify-between border-b border-border bg-muted/10 px-5 py-3.5">
-          <h2 className="text-base font-semibold text-foreground">Active System Alerts</h2>
+          <h2 className="text-base font-semibold text-foreground">Today&apos;s Work Queue</h2>
           <span className={cn(
             'rounded-button px-2.5 py-1 text-xs font-semibold',
             activeAlerts.length > 0 ? 'bg-destructive/10 text-destructive' : 'bg-success/10 text-success'
@@ -54,21 +56,25 @@ export default async function AlertsPage() {
             </div>
             <h3 className="text-base font-semibold text-foreground">Systems Nominal</h3>
             <p className="mx-auto mt-2 max-w-sm text-sm text-muted-foreground">
-              There are currently no active system alerts.
+              There is currently no follow-up work waiting.
             </p>
           </div>
         ) : (
-          <AlertList alerts={activeAlerts} />
+          <div className="grid gap-4 p-4 xl:grid-cols-3">
+            <QueueColumn title="Do now" helper="Urgent order, batch, or loss problems." alerts={workQueue.doNow} tone="danger" />
+            <QueueColumn title="Watch today" helper="Needs attention soon or has just changed." alerts={workQueue.watchToday} tone="warning" />
+            <QueueColumn title="Upcoming" helper="Visible early so work does not surprise the team." alerts={workQueue.upcoming} tone="primary" />
+          </div>
         )}
       </Card>
 
-      <Card className="overflow-hidden">
+      <Card className="overflow-hidden rounded-card border-border bg-card shadow-[var(--shadow-card)]">
         <div className="border-b border-border bg-muted/10 px-5 py-3.5">
-          <h2 className="text-base font-semibold text-foreground">Resolved / Informational History</h2>
+          <h2 className="text-base font-semibold text-foreground">Cleared History</h2>
         </div>
         {historyAlerts.length === 0 ? (
           <div className="px-5 py-8 text-center text-sm text-muted-foreground">
-            No resolved or historical system alerts found.
+            No cleared alert history found.
           </div>
         ) : (
           <AlertList alerts={historyAlerts.slice(0, 20)} muted />
@@ -106,7 +112,7 @@ function SummaryCard({
   }[tone]
 
   return (
-    <Card className="min-h-[138px] p-[18px]">
+    <Card className="rounded-card border-border bg-card p-4 shadow-[var(--shadow-card)]">
       <div className="flex items-start gap-3.5">
         <span className={cn('flex h-12 w-12 shrink-0 items-center justify-center rounded-full', toneClasses.icon)}>
           {tone === 'danger' ? <AlertTriangle className="h-5 w-5" /> : <CheckCircle2 className="h-5 w-5" />}
@@ -126,14 +132,53 @@ function SummaryCard({
   )
 }
 
-function AlertList({ alerts, muted = false }: { alerts: SystemAlert[]; muted?: boolean }) {
+function QueueColumn({
+  title,
+  helper,
+  alerts,
+  tone,
+}: {
+  title: string
+  helper: string
+  alerts: SystemAlert[]
+  tone: 'danger' | 'warning' | 'primary'
+}) {
+  return (
+    <div className="rounded-button border border-border bg-muted/10">
+      <div className="border-b border-border px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-foreground">{title}</h3>
+          <span className={cn(
+            'rounded-full px-2 py-0.5 text-[11px] font-semibold',
+            tone === 'danger' && 'bg-destructive/10 text-destructive',
+            tone === 'warning' && 'bg-warning/12 text-warning',
+            tone === 'primary' && 'bg-primary/10 text-primary'
+          )}>
+            {alerts.length.toLocaleString()}
+          </span>
+        </div>
+        <p className="mt-0.5 text-xs text-muted-foreground">{helper}</p>
+      </div>
+      {alerts.length === 0 ? (
+        <div className="px-4 py-6 text-sm font-medium text-success">Clear</div>
+      ) : (
+        <AlertList alerts={alerts.slice(0, 8)} compact />
+      )}
+    </div>
+  )
+}
+
+function AlertList({ alerts, muted = false, compact = false }: { alerts: SystemAlert[]; muted?: boolean; compact?: boolean }) {
   return (
     <div className="divide-y divide-border">
       {alerts.map((alert) => {
         const dangerous = alert.severity === 'HIGH' || alert.severity === 'CRITICAL'
         const SourceIcon = getSourceIcon(alert.source)
         return (
-          <div key={alert.id} className="grid gap-3 px-5 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+          <div key={alert.id} className={cn(
+            'grid gap-3 px-4 py-3 md:items-center',
+            compact ? 'md:grid-cols-1' : 'md:grid-cols-[minmax(0,1fr)_auto]'
+          )}>
             <div className="flex min-w-0 items-start gap-3">
               <span className={cn(
                 'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-white',
@@ -158,9 +203,14 @@ function AlertList({ alerts, muted = false }: { alerts: SystemAlert[]; muted?: b
                 </div>
                 <p className="mt-1 text-[13px] text-muted-foreground">{alert.description}</p>
                 <p className="mt-1 text-xs text-muted-foreground">{alert.context || '--'}</p>
+                {alert.href ? (
+                  <Link href={alert.href} className="mt-2 inline-flex text-xs font-semibold text-primary hover:underline">
+                    Open record
+                  </Link>
+                ) : null}
               </div>
             </div>
-            <div className="text-xs text-muted-foreground md:text-right">
+            <div className={cn('text-xs text-muted-foreground', !compact && 'md:text-right')}>
               {formatDate(alert.triggeredAt)}
             </div>
           </div>
@@ -170,12 +220,36 @@ function AlertList({ alerts, muted = false }: { alerts: SystemAlert[]; muted?: b
   )
 }
 
+function groupAlertWork(alerts: SystemAlert[]) {
+  const doNow = alerts.filter((alert) => alert.severity === 'CRITICAL' || alert.severity === 'HIGH')
+  const doNowIds = new Set(doNow.map((alert) => alert.id))
+  const watchToday = alerts.filter((alert) => {
+    if (doNowIds.has(alert.id)) return false
+    if (alert.severity === 'MEDIUM') return true
+    return isTodayOrPast(alert.triggeredAt)
+  })
+  const watchIds = new Set(watchToday.map((alert) => alert.id))
+  const upcoming = alerts.filter((alert) => !doNowIds.has(alert.id) && !watchIds.has(alert.id))
+
+  return { doNow, watchToday, upcoming }
+}
+
+function isTodayOrPast(value?: string | null) {
+  if (!value) return false
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return false
+  const endOfToday = new Date()
+  endOfToday.setHours(23, 59, 59, 999)
+  return parsed.getTime() <= endOfToday.getTime()
+}
+
 function getSourceIcon(source: SystemAlert['source']) {
   return {
     Incubation: Thermometer,
     'Batch Workflow': Egg,
     Mortality: Skull,
     Orders: PackageCheck,
+    Customers: UsersRound,
   }[source] || BellRing
 }
 

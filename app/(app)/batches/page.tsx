@@ -4,12 +4,34 @@ import React, { useState, useEffect, useCallback } from 'react';
 import Link from 'next/link';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Search, Egg, Activity, CheckCircle2, Plus, Loader2, Archive, MapPin } from 'lucide-react';
+import { Search, Egg, Activity, CheckCircle2, Plus, Loader2, Archive, MapPin, Calculator } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { calculateBatchCostSnapshot } from '@/lib/costing/batch-costing';
 import { BatchCreationWizard } from './components/batch-creation-wizard';
 import { BatchActionsMenu } from './components/batch-actions-menu';
 import { PlaceBatchDialog } from './components/place-batch-dialog';
 import { createClient } from '@/lib/supabase/client';
+
+const DEFAULT_BREEDS = [
+  'KARI Improved Kienyeji',
+  'Improved Kienyeji',
+  'Broiler',
+  'Layer',
+  'Local Kienyeji',
+]
+
+type SupplierOption = {
+  id: string
+  name: string
+  contactName?: string | null
+  phone?: string | null
+  email?: string | null
+  location?: string | null
+  batchCount?: number
+  hatchRate?: number | null
+  rejectionRate?: number | null
+  averageCostPerAcceptedEgg?: number | null
+}
 
 export default function EggBatchesPage() {
   const [batches, setBatches] = useState<any[]>([])
@@ -17,6 +39,11 @@ export default function EggBatchesPage() {
   const [fetchError, setFetchError] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'active' | 'completed' | 'archived' | 'all'>('active')
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [defaultIncubationDays, setDefaultIncubationDays] = useState(21)
+  const [businessSettings, setBusinessSettings] = useState<any>(null)
+  const [breedOptions, setBreedOptions] = useState<string[]>(DEFAULT_BREEDS)
+  const [supplierOptions, setSupplierOptions] = useState<SupplierOption[]>([])
+  const [manualCostByBatch, setManualCostByBatch] = useState<Record<string, number>>({})
 
   const fetchBatches = useCallback(async () => {
     setLoading(true)
@@ -61,6 +88,102 @@ export default function EggBatchesPage() {
     })
   }, [fetchBatches])
 
+  useEffect(() => {
+    const loadSettingsDefaults = async () => {
+      if (!process.env.NEXT_PUBLIC_SUPABASE_URL || !process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) return
+
+      const supabase = createClient()
+      const { data } = await supabase
+        .from('business_settings')
+        .select('*')
+        .limit(1)
+        .maybeSingle()
+
+      setBusinessSettings(data || null)
+      if (data?.default_incubation_days) {
+        setDefaultIncubationDays(Number(data.default_incubation_days))
+      }
+      if (Array.isArray(data?.breed_options) && data.breed_options.length > 0) {
+        setBreedOptions(data.breed_options)
+      }
+
+      const { data: suppliers } = await supabase
+        .from('suppliers')
+        .select('id, name, contact_name, phone, email, address')
+        .is('deleted_at', null)
+        .order('updated_at', { ascending: false })
+        .limit(250)
+
+      const { data: supplierBatches } = await supabase
+        .from('egg_batches')
+        .select('supplier_id, quantity_received, accepted_eggs, rejected_eggs, quantity_set, quantity_hatched, total_initial_cost')
+        .not('supplier_id', 'is', null)
+        .is('deleted_at', null)
+
+      const { data: costEntries } = await supabase
+        .from('cost_entries')
+        .select('batch_id, amount')
+        .is('deleted_at', null)
+
+      setManualCostByBatch((costEntries || []).reduce((acc: Record<string, number>, entry: any) => {
+        if (!entry.batch_id) return acc
+        acc[entry.batch_id] = (acc[entry.batch_id] || 0) + Number(entry.amount || 0)
+        return acc
+      }, {}))
+
+      const supplierStats = (supplierBatches || []).reduce((acc: Record<string, {
+        batchCount: number
+        received: number
+        accepted: number
+        rejected: number
+        set: number
+        hatched: number
+        cost: number
+      }>, batch: any) => {
+        const supplierId = batch.supplier_id
+        if (!supplierId) return acc
+
+        const current = acc[supplierId] || {
+          batchCount: 0,
+          received: 0,
+          accepted: 0,
+          rejected: 0,
+          set: 0,
+          hatched: 0,
+          cost: 0,
+        }
+
+        const received = Number(batch.quantity_received || 0)
+        const accepted = Number(batch.accepted_eggs || 0)
+        const rejected = Number(batch.rejected_eggs || Math.max(received - accepted, 0))
+
+        acc[supplierId] = {
+          batchCount: current.batchCount + 1,
+          received: current.received + received,
+          accepted: current.accepted + accepted,
+          rejected: current.rejected + rejected,
+          set: current.set + Number(batch.quantity_set || accepted || 0),
+          hatched: current.hatched + Number(batch.quantity_hatched || 0),
+          cost: current.cost + Number(batch.total_initial_cost || 0),
+        }
+
+        return acc
+      }, {})
+
+      setSupplierOptions((suppliers || []).map((supplier: any) => ({
+        ...buildSupplierPerformance(supplierStats[supplier.id]),
+        id: supplier.id,
+        name: supplier.name,
+        contactName: supplier.contact_name || '',
+        phone: supplier.phone || '',
+        email: supplier.email || '',
+        location: supplier.address || '',
+      })))
+    }
+
+    loadSettingsDefaults()
+  }, [])
+
   const currentStatuses = new Set(['LOGGED', 'SETTER', 'HATCHER', 'BROODER'])
   const completedStatuses = new Set(['COMPLETED', 'FAILED', 'DISCARDED', 'CANCELLED'])
   const displayBatches = (batches || []).filter((batch) => {
@@ -95,10 +218,33 @@ export default function EggBatchesPage() {
     0
   );
 
+  const batchCostSnapshots = new Map(
+    displayBatches.map((batch) => [
+      batch.id,
+      calculateBatchCostSnapshot(batch, manualCostByBatch[batch.id] || 0, businessSettings),
+    ])
+  )
+  const costedBatches = Array.from(batchCostSnapshots.values()).filter((snapshot) => snapshot.costPerChick > 0)
+  const totalCostedValue = costedBatches.reduce((total, snapshot) => total + snapshot.totalCost, 0)
+  const totalCostedQuantity = costedBatches.reduce((total, snapshot) => total + snapshot.costQuantity, 0)
+  const averageCostPerChick = costedBatches.length > 0
+    ? totalCostedValue / totalCostedQuantity
+    : 0
+  const defaultChickPrice = Number(businessSettings?.default_chick_price || 0)
+  const costRiskCount = costedBatches.filter((snapshot) => (
+    defaultChickPrice > 0 && snapshot.suggestedMinimumPrice > defaultChickPrice
+  )).length
+
   const formatDate = (value?: string | null) => {
     if (!value) return '--'
     const parsed = new Date(value)
     return Number.isNaN(parsed.getTime()) ? '--' : parsed.toLocaleDateString()
+  }
+
+  const formatMoney = (value?: number | null) => {
+    const amount = Number(value || 0)
+    if (!Number.isFinite(amount) || amount <= 0) return '--'
+    return `KES ${amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
   }
 
   return (
@@ -123,7 +269,7 @@ export default function EggBatchesPage() {
               <button
                 key={item.key}
                 type="button"
-                onClick={() => setViewMode(item.key as 'active' | 'archived' | 'all')}
+                onClick={() => setViewMode(item.key as 'active' | 'completed' | 'archived' | 'all')}
                 className={cn(
                   'h-8 rounded-button px-3 text-[13px] font-medium transition-colors',
                   viewMode === item.key
@@ -161,6 +307,14 @@ export default function EggBatchesPage() {
           </span>
         </div>
       )}
+      {needsPlacement > 0 && (
+        <div className="flex items-center gap-2 rounded-card border border-warning/30 bg-warning/10 px-4 py-3 text-sm text-warning">
+          <MapPin className="h-4 w-4 shrink-0" />
+          <span>
+            {needsPlacement.toLocaleString()} batch{needsPlacement === 1 ? '' : 'es'} need placement review.
+          </span>
+        </div>
+      )}
 
       {/* Operational Highlights */}
       <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -182,24 +336,6 @@ export default function EggBatchesPage() {
           </div>
         </Card>
 
-        <Card className="min-h-[138px] border-warning/30 p-[18px]">
-          <div className="flex items-start gap-3.5">
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-warning text-slate-950 shadow-[0_12px_24px_rgba(251,191,36,0.24)]">
-              <MapPin className="h-5 w-5" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <div className="text-[13px] font-semibold text-foreground">Needs Placement</div>
-              <div className="mt-1.5 text-3xl font-semibold leading-none tracking-tight text-warning">
-                {needsPlacement}
-              </div>
-            </div>
-          </div>
-          <div className="mt-3.5 flex items-center gap-2 border-t border-border pt-3 text-xs font-medium text-muted-foreground">
-            <span className="h-2.5 w-2.5 rounded-full bg-warning" />
-            Waiting for slot assignment
-          </div>
-        </Card>
-        
         <Card className="min-h-[138px] p-[18px]">
           <div className="flex items-start gap-3.5">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-destructive text-white shadow-[0_12px_24px_rgba(255,59,92,0.24)]">
@@ -217,7 +353,7 @@ export default function EggBatchesPage() {
             Incubator stage split
           </div>
         </Card>
-
+        
         <Card className="min-h-[138px] p-[18px]">
           <div className="flex items-start gap-3.5">
             <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-success text-white shadow-[0_12px_24px_rgba(45,212,111,0.22)]">
@@ -235,6 +371,24 @@ export default function EggBatchesPage() {
             Setter and hatcher eggs only
           </div>
         </Card>
+
+        <Card className="min-h-[138px] p-[18px]">
+          <div className="flex items-start gap-3.5">
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-primary text-white shadow-[0_12px_24px_rgba(22,119,255,0.28)]">
+              <Calculator className="h-5 w-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="text-[13px] font-semibold text-foreground">Avg Cost / Chick</div>
+              <div className="mt-1.5 text-3xl font-semibold leading-none tracking-tight text-foreground">
+                {averageCostPerChick > 0 ? formatMoney(averageCostPerChick).replace('KES ', '') : '--'}
+              </div>
+            </div>
+          </div>
+          <div className="mt-3.5 flex items-center gap-2 border-t border-border pt-3 text-xs font-medium text-muted-foreground">
+            <span className={cn("h-2.5 w-2.5 rounded-full", costRiskCount > 0 ? "bg-warning" : "bg-success")} />
+            {costRiskCount > 0 ? `${costRiskCount} price risk${costRiskCount === 1 ? '' : 's'}` : 'No price risk found'}
+          </div>
+        </Card>
       </div>
 
       {/* Main Content Area */}
@@ -249,94 +403,111 @@ export default function EggBatchesPage() {
             />
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm text-left border-collapse">
+        <div>
+          <table className="w-full table-fixed text-left text-sm">
             <thead className="border-b border-border bg-muted/40 text-muted-foreground">
               <tr>
-                <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide">Batch ID</th>
-                <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide">Supplier</th>
-                <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide">Received</th>
-                <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide">Accepted</th>
-                <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide">Inspection</th>
-                <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide">Set Date</th>
-                <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide">Est. Hatch</th>
-                <th className="px-5 py-3 text-[11px] font-semibold uppercase tracking-wide">State</th>
-                <th className="px-5 py-3 text-right text-[11px] font-semibold uppercase tracking-wide">Actions</th>
+                <th className="w-[19%] px-3 py-3 text-[11px] font-semibold uppercase tracking-wide">Batch</th>
+                <th className="w-[16%] px-3 py-3 text-[11px] font-semibold uppercase tracking-wide">Supplier</th>
+                <th className="w-[13%] px-3 py-3 text-right text-[11px] font-semibold uppercase tracking-wide">Eggs</th>
+                <th className="w-[16%] px-3 py-3 text-[11px] font-semibold uppercase tracking-wide">Dates</th>
+                <th className="w-[17%] px-3 py-3 text-[11px] font-semibold uppercase tracking-wide">Cost</th>
+                <th className="w-[14%] px-3 py-3 text-[11px] font-semibold uppercase tracking-wide">State</th>
+                <th className="w-[5%] px-2 py-3 text-right text-[11px] font-semibold uppercase tracking-wide">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border bg-card">
               {loading ? (
                 <tr>
-                  <td colSpan={9} className="px-5 py-8 text-center text-muted-foreground">
+                  <td colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
                     <Loader2 className="w-4 h-4 animate-spin inline mr-2" />
                     Loading batches...
                   </td>
                 </tr>
               ) : fetchError ? (
                 <tr>
-                  <td colSpan={9} className="px-5 py-8 text-center text-destructive">
+                  <td colSpan={7} className="px-5 py-8 text-center text-destructive">
                     Failed to load batches: {fetchError}
                   </td>
                 </tr>
               ) : displayBatches.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="px-5 py-8 text-center text-muted-foreground">
+                  <td colSpan={7} className="px-5 py-8 text-center text-muted-foreground">
                     {emptyMessage}
                   </td>
                 </tr>
-              ) : displayBatches.map((batch: any) => (
-                <tr key={batch.id} className={cn("hover:bg-muted/30 transition-colors group", batch.deleted_at && "opacity-75")}>
-                  <td className="px-5 py-3 font-mono text-[13px] text-primary whitespace-nowrap">
-                    <Link href={`/batches/${batch.id}`} className="hover:underline">
-                      {batch.batch_number}
-                    </Link>
-                  </td>
-                  <td className="px-5 py-3 text-muted-foreground font-medium">
-                    {batch.suppliers?.name || batch.contact_person || '--'}
-                  </td>
-                  <td className="px-5 py-3 text-primary tracking-tight font-medium text-right tabular-nums">
-                    {batch.quantity_received?.toLocaleString()}
-                  </td>
-                  <td className="px-5 py-3 text-primary tracking-tight font-medium text-right tabular-nums">
-                    {(batch.accepted_eggs ?? '--') === '--' ? '--' : Number(batch.accepted_eggs).toLocaleString()}
-                  </td>
-                  <td className="px-5 py-3 text-muted-foreground font-medium whitespace-nowrap">
-                    {batch.inspection_status || 'PENDING'}
-                  </td>
-                  <td className="px-5 py-3 text-muted-foreground font-medium whitespace-nowrap tabular-nums">
-                    {formatDate(batch.set_date)}
-                  </td>
-                  <td className="px-5 py-3 text-muted-foreground font-medium whitespace-nowrap tabular-nums">
-                    {formatDate(batch.expected_hatch_date)}
-                  </td>
-                  <td className="px-5 py-3">
-                    <div className="flex flex-col gap-1">
-                      <StatusBadge status={batch.status} hasPlacementGap={hasPlacementGap(batch)} />
-                      {hasPlacementGap(batch) && (
-                        <PlaceBatchDialog
-                          batchId={batch.id}
-                          batchNumber={batch.batch_number}
-                          acceptedEggs={Number(batch.accepted_eggs || 0)}
-                          onPlaced={fetchBatches}
-                        />
-                      )}
-                      {batch.deleted_at && (
-                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                          Archived
-                        </span>
-                      )}
-                    </div>
-                  </td>
-                  <td className="px-5 py-3 text-right w-14">
-                    <BatchActionsMenu 
-                      batchId={batch.id} 
-                      isArchived={Boolean(batch.deleted_at)}
-                      onDelete={() => setBatches(batches.filter(b => b.id !== batch.id))}
-                      onRestore={() => setBatches(batches.filter(b => b.id !== batch.id))}
-                    />
-                  </td>
-                </tr>
-              ))}
+              ) : displayBatches.map((batch: any) => {
+                const costSnapshot = batchCostSnapshots.get(batch.id)
+                const hasRisk = Boolean(
+                  costSnapshot &&
+                  defaultChickPrice > 0 &&
+                  costSnapshot.suggestedMinimumPrice > defaultChickPrice
+                )
+
+                return (
+                  <tr key={batch.id} className={cn("hover:bg-muted/30 transition-colors group", batch.deleted_at && "opacity-75")}>
+                    <td className="px-3 py-3">
+                      <Link href={`/batches/${batch.id}`} className="block truncate font-mono text-[12px] text-primary hover:underline">
+                        {batch.batch_number}
+                      </Link>
+                      <span className="mt-1 block truncate text-[11px] font-medium text-muted-foreground">
+                        {batch.inspection_status || 'PENDING'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className="block truncate text-[13px] font-medium text-muted-foreground">
+                        {batch.suppliers?.name || batch.contact_person || '--'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 text-right tabular-nums">
+                      <span className="block text-[13px] font-semibold text-primary">
+                        {(batch.accepted_eggs ?? '--') === '--' ? '--' : Number(batch.accepted_eggs).toLocaleString()}
+                      </span>
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        of {Number(batch.quantity_received || 0).toLocaleString()}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3 tabular-nums">
+                      <span className="block text-[12px] font-medium text-foreground">{formatDate(batch.set_date)}</span>
+                      <span className="mt-1 block text-[11px] text-muted-foreground">Hatch {formatDate(batch.expected_hatch_date)}</span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={cn("block text-[12px] font-semibold", hasRisk ? "text-warning" : "text-foreground")}>
+                        {formatMoney(costSnapshot?.costPerChick)}
+                      </span>
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        Min {formatMoney(costSnapshot?.suggestedMinimumPrice)}
+                      </span>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex flex-col items-start gap-1">
+                        <StatusBadge status={batch.status} hasPlacementGap={hasPlacementGap(batch)} />
+                        {hasPlacementGap(batch) && (
+                          <PlaceBatchDialog
+                            batchId={batch.id}
+                            batchNumber={batch.batch_number}
+                            acceptedEggs={Number(batch.accepted_eggs || 0)}
+                            onPlaced={fetchBatches}
+                          />
+                        )}
+                        {batch.deleted_at && (
+                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                            Archived
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                    <td className="px-2 py-3 text-right">
+                      <BatchActionsMenu
+                        batchId={batch.id}
+                        isArchived={Boolean(batch.deleted_at)}
+                        onDelete={() => setBatches(batches.filter(b => b.id !== batch.id))}
+                        onRestore={() => setBatches(batches.filter(b => b.id !== batch.id))}
+                      />
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
         </div>
@@ -345,6 +516,9 @@ export default function EggBatchesPage() {
       {/* Batch Creation Wizard Modal */}
       <BatchCreationWizard 
         isOpen={wizardOpen}
+        defaultIncubationDays={defaultIncubationDays}
+        breedOptions={breedOptions}
+        supplierOptions={supplierOptions}
         onClose={() => {
           setWizardOpen(false)
           fetchBatches()
@@ -352,6 +526,32 @@ export default function EggBatchesPage() {
       />
     </div>
   );
+}
+
+function buildSupplierPerformance(stats?: {
+  batchCount: number
+  received: number
+  accepted: number
+  rejected: number
+  set: number
+  hatched: number
+  cost: number
+}) {
+  if (!stats) {
+    return {
+      batchCount: 0,
+      hatchRate: null,
+      rejectionRate: null,
+      averageCostPerAcceptedEgg: null,
+    }
+  }
+
+  return {
+    batchCount: stats.batchCount,
+    hatchRate: stats.set > 0 ? (stats.hatched / stats.set) * 100 : null,
+    rejectionRate: stats.received > 0 ? (stats.rejected / stats.received) * 100 : null,
+    averageCostPerAcceptedEgg: stats.accepted > 0 ? stats.cost / stats.accepted : null,
+  }
 }
 
 function StatusBadge({ status, hasPlacementGap = false }: { status: string; hasPlacementGap?: boolean }) {

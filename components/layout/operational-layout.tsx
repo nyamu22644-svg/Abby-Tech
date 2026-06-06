@@ -12,6 +12,7 @@ import {
   ShoppingCart,
   Skull,
   Sun,
+  Syringe,
   Thermometer,
   UsersRound,
 } from 'lucide-react'
@@ -19,6 +20,8 @@ import { useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 
+import { PoweredByEdgait } from '@/components/branding/powered-by-edgait'
+import { SYSTEM_BRANDING } from '@/lib/branding'
 import { appShell, componentStyles } from '@/lib/design/theme'
 import { cn } from '@/lib/utils'
 
@@ -32,6 +35,7 @@ const navItems = [
   { label: 'Overview', href: '/dashboard', icon: LayoutDashboard },
   { label: 'Egg Batches', href: '/batches', icon: Egg },
   { label: 'Incubation', href: '/incubation', icon: Thermometer },
+  { label: 'Vaccinations', href: '/vaccinations', icon: Syringe },
   { label: 'Mortality', href: '/mortality', icon: Skull },
   { label: 'Orders', href: '/orders', icon: ShoppingCart },
   { label: 'Customers', href: '/customers', icon: UsersRound },
@@ -88,7 +92,10 @@ export function OperationalLayout({ children, currentUser }: { children: React.R
             </div>
           </div>
 
-          <div className="mt-2 text-xs text-blue-100/70">Version 1.2.0</div>
+          <div className="mt-2 flex flex-col gap-1 text-xs text-blue-100/70">
+            <span>Version {SYSTEM_BRANDING.appVersion}</span>
+            <PoweredByEdgait variant="sidebar" />
+          </div>
         </div>
       </aside>
 

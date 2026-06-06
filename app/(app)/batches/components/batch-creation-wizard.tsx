@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog'
@@ -25,23 +25,33 @@ const STEPS = [
   { id: 6, title: 'Review & Submit', description: 'Confirm batch setup' },
 ]
 
+const BATCH_DRAFT_STORAGE_KEY = 'abbye-batch-creation-draft'
+
 interface BatchWizardProps {
   isOpen: boolean
+  defaultIncubationDays?: number
+  breedOptions?: string[]
+  supplierOptions?: SupplierOption[]
   onClose: () => void
 }
 
-export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
-  const router = useRouter()
-  const [currentStep, setCurrentStep] = useState(1)
-  const [loading, setLoading] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState(false)
-  const [createdBatchNumber, setCreatedBatchNumber] = useState<string>('')
-  const [uploadWarning, setUploadWarning] = useState<string | null>(null)
-  const [inspectionPhotos, setInspectionPhotos] = useState<File[]>([])
-  const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
+type SupplierOption = {
+  id: string
+  name: string
+  contactName?: string | null
+  phone?: string | null
+  email?: string | null
+  location?: string | null
+}
 
-  const [workflow, setWorkflow] = useState<CompleteBatchWorkflow>({
+type BatchDraft = {
+  currentStep: number
+  workflow: CompleteBatchWorkflow
+  savedAt: string
+}
+
+function createEmptyWorkflow(): CompleteBatchWorkflow {
+  return {
     supplier: {
       supplierName: '',
       contactPerson: '',
@@ -67,7 +77,110 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
       loadingOffloadingCost: 0,
       miscellaneousCost: 0,
     },
-  })
+  }
+}
+
+function reviveWorkflowDraft(workflow: CompleteBatchWorkflow): CompleteBatchWorkflow {
+  return {
+    ...workflow,
+    reception: {
+      ...workflow.reception,
+      dateReceived: workflow.reception?.dateReceived
+        ? new Date(workflow.reception.dateReceived)
+        : new Date(),
+    },
+    incubationAssignment: workflow.incubationAssignment
+      ? {
+          ...workflow.incubationAssignment,
+          setDate: workflow.incubationAssignment.setDate
+            ? new Date(workflow.incubationAssignment.setDate)
+            : new Date(),
+          expectedHatchDate: workflow.incubationAssignment.expectedHatchDate
+            ? new Date(workflow.incubationAssignment.expectedHatchDate)
+            : new Date(),
+        }
+      : undefined,
+  }
+}
+
+function hasMeaningfulDraft(workflow: CompleteBatchWorkflow, currentStep: number) {
+  return (
+    currentStep > 1 ||
+    Boolean(workflow.supplier.supplierName?.trim()) ||
+    Boolean(workflow.supplier.phone?.trim()) ||
+    Boolean(workflow.supplier.invoiceNumber?.trim()) ||
+    Boolean(workflow.reception.receivedByName?.trim()) ||
+    Boolean(workflow.reception.breedType?.trim()) ||
+    Number(workflow.reception.totalEggsReceived || 0) > 0 ||
+    Number(workflow.inspection.crackedEggs || 0) > 0 ||
+    Number(workflow.inspection.dirtyEggs || 0) > 0 ||
+    Number(workflow.inspection.rejectedEggs || 0) > 0 ||
+    Number(workflow.costs.eggPurchaseCost || 0) > 0 ||
+    Number(workflow.costs.transportCost || 0) > 0 ||
+    Number(workflow.costs.loadingOffloadingCost || 0) > 0 ||
+    Number(workflow.costs.miscellaneousCost || 0) > 0 ||
+    Boolean(workflow.incubationAssignment)
+  )
+}
+
+export function BatchCreationWizard({
+  isOpen,
+  defaultIncubationDays = 21,
+  breedOptions = [],
+  supplierOptions = [],
+  onClose,
+}: BatchWizardProps) {
+  const router = useRouter()
+  const [currentStep, setCurrentStep] = useState(1)
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState(false)
+  const [createdBatchNumber, setCreatedBatchNumber] = useState<string>('')
+  const [uploadWarning, setUploadWarning] = useState<string | null>(null)
+  const [inspectionPhotos, setInspectionPhotos] = useState<File[]>([])
+  const [draftLoaded, setDraftLoaded] = useState(false)
+  const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
+
+  const [workflow, setWorkflow] = useState<CompleteBatchWorkflow>(() => createEmptyWorkflow())
+
+  useEffect(() => {
+    queueMicrotask(() => {
+      try {
+        const storedDraft = window.localStorage.getItem(BATCH_DRAFT_STORAGE_KEY)
+        if (!storedDraft) {
+          setDraftLoaded(true)
+          return
+        }
+
+        const draft = JSON.parse(storedDraft) as BatchDraft
+        if (draft?.workflow) {
+          setWorkflow(reviveWorkflowDraft(draft.workflow))
+          setCurrentStep(Math.min(Math.max(Number(draft.currentStep || 1), 1), STEPS.length))
+        }
+      } catch {
+        window.localStorage.removeItem(BATCH_DRAFT_STORAGE_KEY)
+      } finally {
+        setDraftLoaded(true)
+      }
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!draftLoaded || success) return
+
+    if (!hasMeaningfulDraft(workflow, currentStep)) {
+      window.localStorage.removeItem(BATCH_DRAFT_STORAGE_KEY)
+      return
+    }
+
+    const draft: BatchDraft = {
+      currentStep,
+      workflow,
+      savedAt: new Date().toISOString(),
+    }
+
+    window.localStorage.setItem(BATCH_DRAFT_STORAGE_KEY, JSON.stringify(draft))
+  }, [currentStep, draftLoaded, success, workflow])
 
   const handleStepComplete = useCallback((stepData: any) => {
     setError(null)
@@ -121,10 +234,12 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
         }
         setSuccess(true)
         setCreatedBatchNumber(result.batchNumber || '')
+        window.localStorage.removeItem(BATCH_DRAFT_STORAGE_KEY)
         
         // Close wizard after 2 seconds and refresh
         setTimeout(() => {
           onClose()
+          resetWizardState()
           router.refresh()
         }, 2000)
       } else {
@@ -138,20 +253,31 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
     }
   }
 
-  const handleClose = () => {
-    if (!loading && !success) {
-      setCurrentStep(1)
-      setWorkflow({
-        supplier: { supplierName: '', contactPerson: '', phone: '', location: '', invoiceNumber: '' },
-        reception: { dateReceived: new Date(), receivedByName: '', breedType: '', totalEggsReceived: 0 },
-        inspection: { crackedEggs: 0, dirtyEggs: 0, rejectedEggs: 0, inspectionStatus: 'PENDING' },
-        costs: { eggPurchaseCost: 0, transportCost: 0, loadingOffloadingCost: 0, miscellaneousCost: 0 },
-      })
-      setInspectionPhotos([])
-      setError(null)
-      setSuccess(false)
-      onClose()
-    }
+  function resetWizardState() {
+    setCurrentStep(1)
+    setWorkflow(createEmptyWorkflow())
+    setInspectionPhotos([])
+    setError(null)
+    setSuccess(false)
+    setCreatedBatchNumber('')
+    setUploadWarning(null)
+  }
+
+  function clearDraftState() {
+    window.localStorage.removeItem(BATCH_DRAFT_STORAGE_KEY)
+    resetWizardState()
+  }
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (nextOpen || loading) return
+    setError(null)
+    onClose()
+  }
+
+  const handleDiscard = () => {
+    if (loading) return
+    clearDraftState()
+    onClose()
   }
 
   const uploadInspectionPhotos = async (batchId: string, files: File[]) => {
@@ -209,7 +335,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
   }
 
   return (
-    <Dialog open={isOpen} onOpenChange={handleClose}>
+    <Dialog open={isOpen} onOpenChange={handleOpenChange}>
       <DialogContent className="max-h-[88vh] overflow-y-auto border-border bg-popover p-5 sm:max-w-[620px] lg:max-w-[680px]">
         <DialogHeader className="gap-1.5">
           <DialogTitle className="text-base font-semibold tracking-tight text-foreground">Create Egg Batch</DialogTitle>
@@ -265,6 +391,11 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
               <p className="text-center text-xs text-muted-foreground">
                 {STEPS[currentStep - 1].description}
               </p>
+              {currentStep > 1 && (
+                <p className="text-center text-[11px] font-medium text-primary">
+                  Draft is saved automatically if this window closes.
+                </p>
+              )}
             </div>
 
             {/* Error Display */}
@@ -283,6 +414,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
               {currentStep === 1 && (
                 <SupplierInfoStep
                   initialData={workflow.supplier}
+                  supplierOptions={supplierOptions}
                   onComplete={handleStepComplete}
                   formId="batch-step-1"
                 />
@@ -290,6 +422,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
               {currentStep === 2 && (
                 <ReceptionInfoStep
                   initialData={workflow.reception}
+                  breedOptions={breedOptions}
                   onComplete={handleStepComplete}
                   formId="batch-step-2"
                 />
@@ -316,6 +449,7 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
                 <IncubationAssignmentStep
                   initialData={workflow.incubationAssignment}
                   acceptedEggs={workflow.inspection.acceptedEggs || 0}
+                  incubationDays={defaultIncubationDays}
                   onComplete={handleStepComplete}
                   onSkip={() => {
                     setWorkflow(prev => ({ ...prev, incubationAssignment: undefined }))
@@ -346,11 +480,22 @@ export function BatchCreationWizard({ isOpen, onClose }: BatchWizardProps) {
               <div className="flex gap-3">
                 <Button
                   variant="outline"
-                  onClick={handleClose}
+                  onClick={handleOpenChange.bind(null, false)}
                   disabled={loading}
                 >
-                  Cancel
+                  Close
                 </Button>
+                {currentStep > 1 && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    onClick={handleDiscard}
+                    disabled={loading}
+                    className="text-destructive hover:text-destructive"
+                  >
+                    Discard Draft
+                  </Button>
+                )}
 
                 {currentStep < STEPS.length && (
                   <Button

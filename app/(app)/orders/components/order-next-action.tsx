@@ -10,6 +10,8 @@ import { RecordPaymentDialog } from './record-payment-dialog'
 export function OrderNextAction({
   orderId,
   customerName,
+  customerPhone,
+  customerLocation,
   balanceDue,
   paymentStatus,
   status,
@@ -18,6 +20,8 @@ export function OrderNextAction({
 }: {
   orderId: string
   customerName: string
+  customerPhone?: string
+  customerLocation?: string
   balanceDue: number
   paymentStatus?: string | null
   status?: string | null
@@ -45,7 +49,16 @@ export function OrderNextAction({
   }
 
   if (paymentStatus === 'PAID' && hasAllocatedBatch) {
-    return <CompleteHandoverDialog orderId={orderId} customerName={customerName} remainingQuantity={remainingQuantity} compact />
+    return (
+      <CompleteHandoverDialog
+        orderId={orderId}
+        customerName={customerName}
+        customerPhone={customerPhone}
+        customerLocation={customerLocation}
+        remainingQuantity={remainingQuantity}
+        compact
+      />
+    )
   }
 
   return (

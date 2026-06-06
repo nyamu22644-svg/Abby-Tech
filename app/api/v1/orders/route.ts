@@ -6,7 +6,6 @@ import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import {
   successResponse,
-  errorResponse,
   apiHandler,
   validateMethod,
   getJsonBody,
@@ -16,17 +15,26 @@ import {
 import { requireRole } from '@/lib/auth';
 import { requireAuth } from '@/lib/auth';
 import { ApiError, ERROR_CODES } from '@/types/security.types';
-import { logOrderCreated } from '@/lib/audit';
 
 const createOrderSchema = z.object({
   customer_name: z.string().min(1, 'Customer name is required'),
   customer_phone: z.string().optional(),
   location: z.string().optional(),
   quantity: z.number().int().positive('Quantity must be > 0'),
-  price_per_chick: z.number().min(0).default(130),
+  breed_type: z.string().min(1, 'Breed type is required'),
+  price_per_chick: z.number().min(0).optional(),
+  discount_amount: z.number().min(0).default(0),
   expected_hatch_date: z.string().optional(),
   notes: z.string().optional(),
 });
+
+const DEFAULT_BREEDS = [
+  'KARI Improved Kienyeji',
+  'Improved Kienyeji',
+  'Broiler',
+  'Layer',
+  'Local Kienyeji',
+];
 
 export const GET = apiHandler(async (req: NextRequest) => {
   validateMethod(req, ['GET']);
@@ -64,103 +72,65 @@ export const POST = apiHandler(async (req: NextRequest) => {
   validateMethod(req, ['POST']);
 
   const user = await requireRole('MANAGER');
-  const body = await getJsonBody(req);
-  const validatedData = createOrderSchema.parse(body);
+  const body = await getJsonBody<Record<string, any>>(req);
 
   const supabase = await createClient();
   const db = supabase as any;
+  const { data: settings } = await db
+    .from('business_settings')
+    .select('default_chick_price, breed_options')
+    .limit(1)
+    .maybeSingle();
+  const breedOptions = Array.isArray(settings?.breed_options) && settings.breed_options.length > 0
+    ? settings.breed_options
+    : DEFAULT_BREEDS;
 
-  // Try to find or create customer
-  let customerId = null;
-  if (validatedData.customer_phone) {
-    const { data: existingPhone } = await db
-      .from('customers')
-      .select('id')
-      .eq('phone', validatedData.customer_phone)
-      .is('deleted_at', null)
-      .maybeSingle();
-    if (existingPhone) customerId = existingPhone.id;
+  const validatedData = createOrderSchema.parse({
+    ...body,
+    price_per_chick: body?.price_per_chick ?? Number(settings?.default_chick_price ?? 130),
+  });
+  const catalogBreed = findCatalogBreed(validatedData.breed_type, breedOptions);
+
+  if (!catalogBreed) {
+    throw new ApiError(
+      ERROR_CODES.VALIDATION_ERROR,
+      'breed_type must match one of the configured breed catalog options.',
+      400,
+      { allowedBreeds: breedOptions }
+    );
   }
 
-  if (!customerId) {
-    const { data: existingName } = await db
-      .from('customers')
-      .select('id')
-      .eq('name', validatedData.customer_name)
-      .is('deleted_at', null)
-      .maybeSingle();
-    if (existingName) customerId = existingName.id;
-  }
-
-  if (!customerId) {
-    const { data: newCust, error: custErr } = await db
-      .from('customers')
-      .insert({
-        name: validatedData.customer_name,
-        phone: validatedData.customer_phone || null,
-        address: validatedData.location || null,
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .select('id')
-      .single();
-
-    if (!custErr && newCust) {
-      customerId = newCust.id;
-    }
-  }
-
-  if (!customerId) {
-    throw new ApiError(ERROR_CODES.INTERNAL_ERROR, 'Failed to create or find customer', 500);
-  }
-
-  const order_number = `ORD-${new Date().getFullYear()}-${Math.floor(Math.random() * 10000)
-    .toString()
-    .padStart(4, '0')}`;
-
-  const total_amount = validatedData.quantity * validatedData.price_per_chick;
-
-  const { data: newOrder, error } = await db
-    .from('orders')
-    .insert({
-      order_number,
-      customer_id: customerId,
-      total_quantity: validatedData.quantity,
-      subtotal_amount: total_amount,
-      total_amount,
-      balance_due: total_amount,
-      amount_paid: 0,
-      status: 'INQUIRY',
-      payment_status: 'PENDING',
-      dispatch_status: 'PENDING',
-      required_by_date: validatedData.expected_hatch_date || null,
-      notes: validatedData.notes || null,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .select()
-    .single();
+  const { data: newOrder, error } = await db.rpc('create_order_atomic', {
+    p_customer_name: validatedData.customer_name,
+    p_customer_phone: validatedData.customer_phone || null,
+    p_location: validatedData.location || null,
+    p_quantity: validatedData.quantity,
+    p_breed_type: catalogBreed,
+    p_price_per_chick: validatedData.price_per_chick,
+    p_discount_amount: validatedData.discount_amount,
+    p_expected_hatch_date: validatedData.expected_hatch_date || null,
+    p_notes: validatedData.notes || null,
+    p_created_by: user.id,
+  });
 
   if (error) {
     throw new ApiError(ERROR_CODES.INTERNAL_ERROR, error.message, 500);
   }
 
-  const { error: itemError } = await db.from('order_items').insert({
-    order_id: newOrder.id,
-    description: 'Day-old chicks',
-    quantity: validatedData.quantity,
-    unit_price: validatedData.price_per_chick,
-    total_price: total_amount,
-    status: 'UNALLOCATED',
-    created_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  });
-
-  if (itemError) {
-    throw new ApiError(ERROR_CODES.INTERNAL_ERROR, itemError.message, 500);
-  }
-
-  await logOrderCreated(newOrder.id, validatedData);
-
-  return successResponse(newOrder, 201);
+  const createdOrder = Array.isArray(newOrder) ? newOrder[0] : newOrder;
+  return successResponse(createdOrder, 201);
 });
+
+function normalizeBreed(value?: string | null) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ');
+}
+
+function findCatalogBreed(value: string, breedOptions: string[]) {
+  const requestedValue = normalizeBreed(value);
+  if (!requestedValue) return null;
+  return breedOptions.find((breed) => normalizeBreed(breed) === requestedValue) || null;
+}

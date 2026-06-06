@@ -2,15 +2,16 @@ import type { ComponentType } from 'react';
 import type { Metadata } from 'next';
 import Link from 'next/link';
 import {
-  Banknote,
   CheckCircle2,
+  Clock,
   Package,
   Search,
   ShoppingCart,
-  TriangleAlert,
   Wallet,
 } from 'lucide-react';
 import { Card } from '@/components/ui/card';
+import { isPaymentFollowUpDue, runOrderAutomation } from '@/lib/automation/order-automation';
+import { calculateBatchCostSnapshot } from '@/lib/costing/batch-costing';
 import { createClient } from '@/lib/supabase/server';
 import { cn } from '@/lib/utils';
 import { CreateOrderDialog } from './components/create-order-dialog';
@@ -29,12 +30,23 @@ type OrdersPageProps = {
 type OrderRecord = any;
 type OrderItemRecord = any;
 type BatchRecord = any;
+type CustomerRecord = any;
+
+const DEFAULT_BREEDS = [
+  'KARI Improved Kienyeji',
+  'Improved Kienyeji',
+  'Broiler',
+  'Layer',
+  'Local Kienyeji',
+];
 
 export default async function OrdersPage({ searchParams }: OrdersPageProps) {
   const supabase = await createClient();
   const db = supabase as any;
   const params = searchParams ? await searchParams : {};
   const query = (params.q || '').trim();
+
+  await runOrderAutomation(db);
 
   const { data: orders } = await db
     .from('orders')
@@ -93,7 +105,6 @@ export default async function OrdersPage({ searchParams }: OrdersPageProps) {
     }
     return acc;
   }, 0);
-  const expectedRevenue = allOrders.reduce((acc: number, order: OrderRecord) => acc + (order.total_amount || 0), 0);
   const totalBalanceDue = allOrders.reduce((acc: number, order: OrderRecord) => acc + (order.balance_due || 0), 0);
   const chicksTaken = allOrders.reduce((acc: number, order: OrderRecord) => {
     if (order.status === 'DELIVERED') {
@@ -104,10 +115,34 @@ export default async function OrdersPage({ searchParams }: OrdersPageProps) {
 
   const { data: activeBatches } = await db
     .from('egg_batches')
-    .select('id, batch_number, quantity_received, quantity_set, accepted_eggs, quantity_hatched, quantity_culled, mortality_count, status')
+    .select('id, batch_number, breed_type, quantity_received, quantity_set, accepted_eggs, quantity_hatched, quantity_culled, mortality_count, status, set_date, expected_hatch_date, actual_hatch_date, total_initial_cost')
     .not('status', 'eq', 'DISCARDED')
     .not('status', 'eq', 'FAILED')
     .not('status', 'eq', 'CANCELLED');
+
+  const { data: batchCosts } = await db
+    .from('cost_entries')
+    .select('batch_id, amount')
+    .is('deleted_at', null);
+
+  const { data: customers } = await db
+    .from('customers')
+    .select('id, name, phone, address, city, country, preferred_breed, preferred_payment_method, relationship_notes')
+    .is('deleted_at', null)
+    .order('updated_at', { ascending: false })
+    .limit(250);
+
+  const { data: settings } = await db
+    .from('business_settings')
+    .select('*')
+    .limit(1)
+    .maybeSingle();
+
+  const defaultChickPrice = Number(settings?.default_chick_price ?? 130);
+  const reservationExpiryDays = Number(settings?.reservation_expiry_days ?? 3);
+  const breedOptions = Array.isArray(settings?.breed_options) && settings.breed_options.length > 0
+    ? settings.breed_options
+    : DEFAULT_BREEDS;
 
   const batchAllocations = allOrders.reduce((acc: Record<string, number>, order: OrderRecord) => {
     if (order.status === 'CANCELLED') return acc;
@@ -119,30 +154,95 @@ export default async function OrdersPage({ searchParams }: OrdersPageProps) {
     return acc;
   }, {});
 
-  let fulfillmentRisks = 0;
-  let projectedAvailableChicks = 0;
-  let readyNowChicks = 0;
-  (activeBatches || []).forEach((batch: BatchRecord) => {
-    const allocated = batchAllocations[batch.id] || 0;
-    const projectedLoss = (batch.quantity_culled || 0) + (batch.mortality_count || 0);
-    const incubationBase = batch.quantity_set ?? batch.accepted_eggs ?? batch.quantity_received ?? 0;
-    const isReadyBatch = ['COMPLETED', 'BROODER'].includes(batch.status || '');
-    const baseQuantity = isReadyBatch
-      ? batch.quantity_hatched || 0
-      : Math.max(0, incubationBase - projectedLoss);
-    const available = Math.max(0, baseQuantity - allocated);
+  const manualCostByBatch = (batchCosts || []).reduce((acc: Record<string, number>, entry: any) => {
+    if (!entry.batch_id) return acc;
+    acc[entry.batch_id] = (acc[entry.batch_id] || 0) + Number(entry.amount || 0);
+    return acc;
+  }, {});
 
-    projectedAvailableChicks += available;
-    if (isReadyBatch) {
-      readyNowChicks += available;
-    }
+  const inventorySummary = (activeBatches || []).reduce(
+    (acc: {
+      projectedAvailableChicks: number;
+      readyNowChicks: number;
+      allocationCandidates: Array<{
+        id: string;
+        batchNumber: string;
+        breedType?: string | null;
+        status: string;
+        expectedHatchDate?: string | null;
+        available: number;
+        baseQuantity: number;
+        allocated: number;
+        estimatedCostPerChick: number | null;
+      }>;
+    }, batch: BatchRecord) => {
+      const allocated = batchAllocations[batch.id] || 0;
+      const projectedLoss = (batch.quantity_culled || 0) + (batch.mortality_count || 0);
+      const incubationBase = batch.quantity_set ?? batch.accepted_eggs ?? batch.quantity_received ?? 0;
+      const isReadyBatch = ['COMPLETED', 'BROODER'].includes(batch.status || '');
+      const baseQuantity = isReadyBatch
+        ? batch.quantity_hatched || 0
+        : Math.max(0, incubationBase - projectedLoss);
+      const available = Math.max(0, baseQuantity - allocated);
+      const costBasisQuantity = Number(batch.quantity_set ?? batch.accepted_eggs ?? batch.quantity_received ?? 0);
+      const costSnapshot = calculateBatchCostSnapshot(batch, manualCostByBatch[batch.id] || 0, settings);
+      const estimatedCostPerChick = costSnapshot.costPerChick > 0
+        ? costSnapshot.costPerChick
+        : costBasisQuantity > 0
+          ? Number(batch.total_initial_cost || 0) / costBasisQuantity
+          : null;
 
-    if (allocated > 0) {
-      if (baseQuantity < allocated) {
-        fulfillmentRisks++;
-      }
+      return {
+        projectedAvailableChicks: acc.projectedAvailableChicks + available,
+        readyNowChicks: acc.readyNowChicks + (isReadyBatch ? available : 0),
+        allocationCandidates: [
+          ...acc.allocationCandidates,
+          {
+            id: batch.id,
+            batchNumber: batch.batch_number,
+            breedType: batch.breed_type,
+            status: batch.status,
+            expectedHatchDate: batch.expected_hatch_date,
+            available,
+            baseQuantity,
+            allocated,
+            estimatedCostPerChick,
+          },
+        ],
+      };
+    },
+    {
+      projectedAvailableChicks: 0,
+      readyNowChicks: 0,
+      allocationCandidates: [],
     }
+  );
+
+  const {
+    projectedAvailableChicks,
+    readyNowChicks,
+    allocationCandidates,
+  } = inventorySummary;
+
+  const lastPriceByCustomer = new Map<string, number>();
+  allOrders.forEach((order: OrderRecord) => {
+    const customerId = getCustomerId(order);
+    if (!customerId || lastPriceByCustomer.has(customerId)) return;
+    const item = getOrderItems(order).find((entry: OrderItemRecord) => Number(entry.unit_price || 0) > 0);
+    if (item) lastPriceByCustomer.set(customerId, Number(item.unit_price));
   });
+
+  const customerOptions = (customers || []).map((customer: CustomerRecord) => ({
+    id: customer.id,
+    name: customer.name,
+    phone: customer.phone || '',
+    location: customer.address || customer.city || customer.country || '',
+    preferredBreed: customer.preferred_breed || '',
+    preferredPaymentMethod: customer.preferred_payment_method || '',
+    notes: customer.relationship_notes || '',
+    lastPricePerChick: lastPriceByCustomer.get(customer.id) || null,
+  }));
+  const followUp = buildOrderFollowUp(allOrders, reservationExpiryDays);
 
   return (
     <div className="space-y-4 animate-in fade-in zoom-in-95 duration-200">
@@ -156,17 +256,16 @@ export default async function OrdersPage({ searchParams }: OrdersPageProps) {
         <CreateOrderDialog
           projectedAvailableChicks={projectedAvailableChicks}
           readyNowChicks={readyNowChicks}
+          defaultChickPrice={defaultChickPrice}
+          breedOptions={breedOptions}
+          customers={customerOptions}
+          allocationCandidates={allocationCandidates.filter((batch: any) => batch.available > 0)}
         />
       </div>
 
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-5">
-        <MetricCard
-          label="Estimated Revenue"
-          value={formatCurrency(expectedRevenue)}
-          helper="Expected order value"
-          icon={Banknote}
-          iconTone="blue"
-        />
+      <FollowUpQueue followUp={followUp} />
+
+      <div className="grid gap-3 md:grid-cols-3">
         <MetricCard
           label="Outstanding Balance"
           value={formatCurrency(totalBalanceDue)}
@@ -187,13 +286,6 @@ export default async function OrdersPage({ searchParams }: OrdersPageProps) {
           helper={`${chicksTaken.toLocaleString()} already taken`}
           icon={CheckCircle2}
           iconTone="green"
-        />
-        <MetricCard
-          label="Fulfillment Risks"
-          value={fulfillmentRisks.toLocaleString()}
-          helper="Allocated batches with deficit risk"
-          icon={TriangleAlert}
-          iconTone={fulfillmentRisks > 0 ? 'amber' : 'green'}
         />
       </div>
 
@@ -293,6 +385,8 @@ export default async function OrdersPage({ searchParams }: OrdersPageProps) {
                         <OrderNextAction
                           orderId={order.id}
                           customerName={getCustomerName(order)}
+                          customerPhone={getCustomerPhone(order)}
+                          customerLocation={getCustomerLocation(order)}
                           balanceDue={order.balance_due || 0}
                           paymentStatus={order.payment_status}
                           status={order.status}
@@ -334,28 +428,168 @@ function MetricCard({
   iconTone: 'blue' | 'green' | 'amber' | 'red';
 }) {
   return (
-    <Card className="min-h-[138px] rounded-card border-border bg-card p-[18px] shadow-[var(--shadow-card)]">
-      <div className="flex items-start justify-between gap-3">
+    <Card className="rounded-card border-border bg-card p-3.5 shadow-[var(--shadow-card)]">
+      <div className="flex items-start gap-3">
         <div
           className={cn(
-            'flex h-12 w-12 items-center justify-center rounded-[16px]',
+            'flex h-10 w-10 shrink-0 items-center justify-center rounded-[14px]',
             iconTone === 'blue' && 'bg-primary text-primary-foreground shadow-[0_14px_28px_rgba(37,99,235,0.24)]',
             iconTone === 'green' && 'bg-success/10 text-success',
             iconTone === 'amber' && 'bg-warning/10 text-warning',
             iconTone === 'red' && 'bg-destructive/10 text-destructive'
           )}
         >
-          <Icon className="h-5 w-5" />
+          <Icon className="h-4 w-4" />
         </div>
-        <span className="rounded-full bg-muted px-2 py-1 text-[11px] font-semibold text-muted-foreground">Live</span>
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+          <p className="mt-1 text-2xl font-semibold tracking-tight text-foreground tabular-nums">{value}</p>
+        </div>
       </div>
-      <div className="mt-5">
-        <p className="text-[13px] font-semibold text-foreground">{label}</p>
-        <p className="mt-1 text-3xl font-semibold tracking-tight text-foreground tabular-nums">{value}</p>
-      </div>
-      <div className="mt-4 border-t border-border pt-3 text-xs font-medium text-muted-foreground">{helper}</div>
+      <div className="mt-3 border-t border-border pt-2.5 text-xs font-medium text-muted-foreground">{helper}</div>
     </Card>
   );
+}
+
+function FollowUpQueue({ followUp }: { followUp: ReturnType<typeof buildOrderFollowUp> }) {
+  const groups = [
+    {
+      label: 'Payment Follow-up',
+      shortLabel: 'Payment Due',
+      helper: 'Customers with balance due',
+      count: followUp.paymentDue.length,
+      items: followUp.paymentDue,
+      icon: Wallet,
+      tone: followUp.paymentDue.length > 0 ? 'amber' : 'green',
+    },
+    {
+      label: 'Ready for Pickup',
+      shortLabel: 'Pickup Ready',
+      helper: 'Paid orders with allocated chicks',
+      count: followUp.readyForHandover.length,
+      items: followUp.readyForHandover,
+      icon: CheckCircle2,
+      tone: 'green',
+    },
+    {
+      label: 'Needs Allocation',
+      shortLabel: 'Stock Match',
+      helper: 'Orders waiting for stock match',
+      count: followUp.needsAllocation.length,
+      items: followUp.needsAllocation,
+      icon: Package,
+      tone: followUp.needsAllocation.length > 0 ? 'blue' : 'green',
+    },
+    {
+      label: 'Unpaid Hold Release',
+      shortLabel: 'Hold Release',
+      helper: 'Reserved stock near release',
+      count: followUp.expiringHolds.length,
+      items: followUp.expiringHolds,
+      icon: Clock,
+      tone: followUp.expiringHolds.length > 0 ? 'red' : 'green',
+    },
+  ] as const
+
+  const actionItems = groups
+    .flatMap((group) =>
+      group.items.slice(0, 2).map((item) => ({
+        ...item,
+        groupLabel: group.label,
+        tone: group.tone,
+      }))
+    )
+    .slice(0, 3)
+
+  return (
+    <Card className="overflow-hidden rounded-card border-border bg-card shadow-[var(--shadow-card)]">
+      <div className="flex flex-col gap-1 border-b border-border bg-muted/10 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-base font-semibold tracking-tight text-foreground">Order Follow-up</h2>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            Payments, allocations, pickups, and unpaid holds that need attention.
+          </p>
+        </div>
+        <span className={cn(
+          'w-fit rounded-button px-2.5 py-1 text-xs font-semibold',
+          followUp.totalActions > 0 ? 'bg-warning/12 text-warning' : 'bg-success/12 text-success'
+        )}>
+          {followUp.totalActions > 0 ? `${followUp.totalActions} action${followUp.totalActions === 1 ? '' : 's'}` : 'Clear'}
+        </span>
+      </div>
+      <div className="grid gap-3 p-4 xl:grid-cols-[minmax(0,1fr)_minmax(300px,0.72fr)]">
+        <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          {groups.map((group) => {
+            const Icon = group.icon
+            return (
+              <div key={group.label} className="rounded-button border border-border bg-muted/10 px-3 py-2.5">
+                <div className="flex items-center gap-2.5">
+                  <span className={cn(
+                    'flex h-8 w-8 shrink-0 items-center justify-center rounded-full',
+                    group.tone === 'blue' && 'bg-primary text-primary-foreground shadow-[0_10px_20px_rgba(37,99,235,0.22)]',
+                    group.tone === 'green' && 'bg-success/10 text-success',
+                    group.tone === 'amber' && 'bg-warning/10 text-warning',
+                    group.tone === 'red' && 'bg-destructive/10 text-destructive'
+                  )}>
+                    <Icon className="h-3.5 w-3.5" />
+                  </span>
+                  <div className="min-w-0">
+                    <p className="text-[10px] font-semibold uppercase leading-tight tracking-wide text-muted-foreground">
+                      {group.shortLabel}
+                    </p>
+                    <p className="text-xl font-semibold leading-none tracking-tight text-foreground">
+                      {group.count.toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+
+        <div className="rounded-button border border-border bg-muted/10 p-3">
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Next actions</p>
+            <span className={cn(
+              'rounded-full px-2 py-0.5 text-[11px] font-semibold',
+              followUp.totalActions > 0 ? 'bg-warning/12 text-warning' : 'bg-success/12 text-success'
+            )}>
+              {followUp.totalActions > 0 ? `${followUp.totalActions} open` : 'Clear'}
+            </span>
+          </div>
+          {actionItems.length > 0 ? (
+            <div className="mt-2 space-y-1.5">
+              {actionItems.map((item) => (
+                <Link
+                  key={`${item.groupLabel}-${item.id}`}
+                  href={`/orders/${item.id}`}
+                  className="block rounded-button bg-background/60 px-2.5 py-2 text-xs transition hover:bg-muted/35"
+                >
+                  <span className="flex items-center justify-between gap-2">
+                    <span className="truncate font-semibold text-foreground">{item.title}</span>
+                    <span className={cn(
+                      'shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-semibold',
+                      item.tone === 'blue' && 'bg-primary/10 text-primary',
+                      item.tone === 'green' && 'bg-success/10 text-success',
+                      item.tone === 'amber' && 'bg-warning/12 text-warning',
+                      item.tone === 'red' && 'bg-destructive/10 text-destructive'
+                    )}>
+                      {item.groupLabel}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 block truncate text-muted-foreground">{item.detail}</span>
+                </Link>
+              ))}
+            </div>
+          ) : (
+            <p className="mt-2 rounded-button bg-success/10 px-2.5 py-2 text-xs font-medium text-success">
+              No action needed
+            </p>
+          )}
+        </div>
+      </div>
+    </Card>
+  )
 }
 
 function getCustomer(order: OrderRecord) {
@@ -377,6 +611,57 @@ function getTakenQuantity(order: OrderRecord) {
 
 function getRemainingQuantity(order: OrderRecord) {
   return Math.max(0, getOrderQuantity(order) - getTakenQuantity(order));
+}
+
+function buildOrderFollowUp(orders: OrderRecord[], reservationExpiryDays: number) {
+  const openOrders = orders.filter((order) => !['DELIVERED', 'CANCELLED'].includes(order.status || ''))
+  const toItem = (order: OrderRecord, detail: string) => ({
+    id: order.id,
+    title: `${order.order_number || order.id} / ${getCustomerName(order)}`,
+    detail,
+  })
+
+  const paymentDue = openOrders
+    .filter((order) => isPaymentFollowUpDue(order))
+    .map((order) => toItem(order, `Balance ${formatCurrency(Number(order.balance_due || 0))}`))
+
+  const readyForHandover = openOrders
+    .filter((order) => order.payment_status === 'PAID')
+    .filter((order) => getOrderItems(order).some((item) => item.batch_id && item.status !== 'CANCELLED'))
+    .map((order) => toItem(order, `${getRemainingQuantity(order).toLocaleString()} chicks remaining`))
+
+  const needsAllocation = openOrders
+    .filter((order) => ['INQUIRY', 'RESERVED', 'CONFIRMED'].includes(order.status || ''))
+    .filter((order) => !getOrderItems(order).some((item) => item.batch_id && item.status !== 'CANCELLED'))
+    .map((order) => toItem(order, `${getOrderQuantity(order).toLocaleString()} chicks requested`))
+
+  const expiringHolds = openOrders
+    .filter((order) => order.payment_status === 'PENDING')
+    .filter((order) => ['RESERVED', 'CONFIRMED', 'ALLOCATED'].includes(order.status || ''))
+    .filter((order) => getOrderItems(order).some((item) => item.batch_id && item.status !== 'CANCELLED'))
+    .map((order) => {
+      const daysUsed = getElapsedWholeDays(order.created_at)
+      const daysLeft = Math.max(0, reservationExpiryDays - daysUsed)
+      return { order, daysLeft }
+    })
+    .filter(({ daysLeft }) => daysLeft <= 1)
+    .map(({ order, daysLeft }) => toItem(order, daysLeft === 0 ? 'Release window reached' : '1 day left before release'))
+
+  return {
+    paymentDue,
+    readyForHandover,
+    needsAllocation,
+    expiringHolds,
+    totalActions: paymentDue.length + readyForHandover.length + needsAllocation.length + expiringHolds.length,
+  }
+}
+
+function getElapsedWholeDays(value?: string | null) {
+  if (!value) return 0
+  const createdAt = new Date(value)
+  if (Number.isNaN(createdAt.getTime())) return 0
+  const elapsed = Date.now() - createdAt.getTime()
+  return Math.max(0, Math.floor(elapsed / (24 * 60 * 60 * 1000)))
 }
 
 function getCustomerName(order: OrderRecord) {

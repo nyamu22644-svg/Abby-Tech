@@ -366,7 +366,14 @@ export default async function OrderDetailsPage({ params }: { params: Promise<{ i
                     currentUnitPrice={primaryItem?.unit_price || 0}
                     currentDiscount={order.discount_amount || 0}
                   />
-                  <CompleteHandoverDialog orderId={order.id} customerName={customer?.name || 'Customer'} remainingQuantity={remainingQuantity} compact />
+                  <CompleteHandoverDialog
+                    orderId={order.id}
+                    customerName={customer?.name || 'Customer'}
+                    customerPhone={customer?.phone || ''}
+                    customerLocation={customer?.address || customer?.city || customer?.country || ''}
+                    remainingQuantity={remainingQuantity}
+                    compact
+                  />
                 </>
               ) : (
                 <>

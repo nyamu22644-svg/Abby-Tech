@@ -11,6 +11,7 @@ import { notFound } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { AddCostDialog } from '../components/add-cost-dialog';
 import { BatchLifecycleActionDialog } from '../components/batch-lifecycle-action-dialog';
+import { calculateBatchCostSnapshot } from '@/lib/costing/batch-costing';
 import { CANDLING_WINDOW_LABEL, CANDLING_WINDOW_START_DAY, LOCKDOWN_DAY, LOCKDOWN_LABEL } from '@/lib/incubation/rules';
 
 export const metadata: Metadata = {
@@ -44,7 +45,7 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
   // Fetch revenue from orders allocated to this batch
   const { data: allocatedOrderItems } = await (supabase as any)
     .from('order_items')
-    .select('quantity, total_price, orders(total_amount, balance_due, status)')
+    .select('quantity, status, total_price, orders(total_amount, balance_due, status, order_dispatches(handover_quantity))')
     .eq('batch_id', id)
     .neq('orders.status', 'CANCELLED');
 
@@ -67,6 +68,12 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
     .select('*')
     .eq('batch_id', id)
     .order('cost_date', { ascending: false });
+
+  const { data: settings } = await supabase
+    .from('business_settings')
+    .select('*')
+    .limit(1)
+    .maybeSingle();
 
   const { data: incubationAssignments } = await supabase
     .from('batch_incubation_assignments')
@@ -149,7 +156,8 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
   // --- Financial Calculations ---
   const initialCost = batch.total_initial_cost || 0;
   const operationalCostsTotal = (costs || []).reduce((acc, cost) => acc + Number(cost.amount || 0), 0);
-  const totalCost = initialCost + operationalCostsTotal;
+  const costSnapshot = calculateBatchCostSnapshot(batch, operationalCostsTotal, settings);
+  const totalCost = costSnapshot.totalCost;
   
   const totalRevenue = (allocatedOrderItems || []).reduce((acc: number, item: any) => {
     const order = Array.isArray(item.orders) ? item.orders[0] : item.orders;
@@ -159,7 +167,18 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
     const order = Array.isArray(item.orders) ? item.orders[0] : item.orders;
     return acc + (order?.balance_due || 0);
   }, 0);
-  const totalAllocatedChicks = (allocatedOrderItems || []).reduce((acc: number, item: any) => acc + (item.quantity || 0), 0);
+  const liveOrderItems = (allocatedOrderItems || []).filter((item: any) => {
+    const order = Array.isArray(item.orders) ? item.orders[0] : item.orders;
+    return item.status !== 'CANCELLED' && order?.status !== 'CANCELLED';
+  });
+  const totalAllocatedChicks = liveOrderItems.reduce((acc: number, item: any) => acc + Number(item.quantity || 0), 0);
+  const pickedUpChicks = liveOrderItems.reduce((acc: number, item: any) => {
+    const order = Array.isArray(item.orders) ? item.orders[0] : item.orders;
+    const dispatches = Array.isArray(order?.order_dispatches) ? order.order_dispatches : [];
+    const handedOver = dispatches.reduce((sum: number, dispatch: any) => sum + Number(dispatch.handover_quantity || 0), 0);
+    return acc + Math.min(Number(item.quantity || 0), handedOver);
+  }, 0);
+  const heldForOrders = Math.max(totalAllocatedChicks - pickedUpChicks, 0);
   const collectedRevenue = totalRevenue - outstandingBal;
   const estimatedProfit = totalRevenue > 0 ? totalRevenue - totalCost : 0; // Only calculate profit if there is revenue logged
   const hasRevenue = totalRevenue > 0;
@@ -169,9 +188,12 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
   const costPerEgg = incubatingEggs > 0 ? totalCost / incubatingEggs : 0;
   // If not hatched yet, estimate based on remaining in cycle, else actual hatched
   const chicksForCalculation = hatched > 0 ? hatched : (remainingInCycle > 0 ? remainingInCycle : 1);
-  const costPerChick = totalCost / chicksForCalculation;
+  const costPerChick = costSnapshot.costPerChick || (totalCost / chicksForCalculation);
 
   const estimatedLossAmount = (batch.total_financial_loss || 0) + (culled * costPerEgg); // Incorporating explicit mortality loss
+  const stockBasis = ['COMPLETED', 'BROODER'].includes(batch.status || '') ? hatched : remainingInCycle;
+  const availableForNewOrders = Math.max(stockBasis - totalAllocatedChicks, 0);
+  const stockShortfall = Math.max(totalAllocatedChicks - stockBasis, 0);
 
   const formatDate = (value?: string | null) => {
     if (!value) return '--';
@@ -382,6 +404,38 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
               )} />
             )}
           </div>
+        </div>
+
+        <div className="grid gap-3 border-t border-border bg-muted/5 p-4 sm:grid-cols-2 lg:grid-cols-4">
+          <MetricLine label="Initial Cost" value={`KES ${costSnapshot.initialCost.toLocaleString()}`} helper="Eggs, transport, and intake costs" />
+          <MetricLine label="Manual Expenses" value={`KES ${costSnapshot.manualCostTotal.toLocaleString()}`} helper="Costs logged manually" />
+          <MetricLine label="Auto Daily Running" value={`KES ${(costSnapshot.incubationRunningCost + costSnapshot.holdingRunningCost + costSnapshot.feedCost).toLocaleString(undefined, { maximumFractionDigits: 0 })}`} helper={`${costSnapshot.incubationDays} incubation days, ${costSnapshot.holdingDays} holding days`} />
+          <MetricLine label="Vaccination Cost" value={`KES ${costSnapshot.vaccinationCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} helper="From Settings schedule" />
+        </div>
+      </Card>
+
+      <Card className="overflow-hidden rounded-card border-border bg-card shadow-[var(--shadow-card)]">
+        <div className="flex flex-col gap-1 border-b border-border bg-muted/10 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-2">
+            <PackageCheck className="h-4 w-4 text-primary" />
+            <h3 className="text-base font-semibold tracking-tight text-foreground">Stock Movement</h3>
+          </div>
+          <span className={cn(
+            'w-fit rounded-button px-2.5 py-1 text-xs font-semibold',
+            stockShortfall > 0 ? 'bg-destructive/10 text-destructive' : 'bg-success/10 text-success'
+          )}>
+            {stockShortfall > 0 ? `${stockShortfall.toLocaleString()} short` : 'Balanced'}
+          </span>
+        </div>
+        <div className="grid gap-0 divide-y divide-border sm:grid-cols-2 sm:divide-x sm:divide-y-0 xl:grid-cols-5">
+          <StockMovementTile label={['COMPLETED', 'BROODER'].includes(batch.status || '') ? 'Hatched Stock' : 'Projected Stock'} value={stockBasis} helper={['COMPLETED', 'BROODER'].includes(batch.status || '') ? 'Recorded hatch minus losses' : 'Accepted eggs minus recorded losses'} tone="primary" />
+          <StockMovementTile label="Held for Orders" value={heldForOrders} helper="Allocated and not picked up" tone="warning" />
+          <StockMovementTile label="Picked Up" value={pickedUpChicks} helper="Already handed over" tone="success" />
+          <StockMovementTile label="Losses" value={totalLosses} helper="Culled plus mortality" tone="danger" />
+          <StockMovementTile label="Available" value={availableForNewOrders} helper="Free for new orders" tone={availableForNewOrders > 0 ? 'success' : 'muted'} />
+        </div>
+        <div className="border-t border-border bg-muted/5 px-5 py-3 text-xs text-muted-foreground">
+          Stock is calculated from hatch results, order allocations, handovers, candling removals, and mortality records.
         </div>
       </Card>
 
@@ -892,6 +946,47 @@ function BatchActionCard({
       </div>
     </Card>
   );
+}
+
+function MetricLine({ label, value, helper }: { label: string; value: string; helper: string }) {
+  return (
+    <div className="rounded-button border border-border bg-background p-3">
+      <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+      <p className="mt-1 text-sm font-semibold text-foreground">{value}</p>
+      <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{helper}</p>
+    </div>
+  )
+}
+
+function StockMovementTile({
+  label,
+  value,
+  helper,
+  tone,
+}: {
+  label: string
+  value: number
+  helper: string
+  tone: 'primary' | 'success' | 'warning' | 'danger' | 'muted'
+}) {
+  return (
+    <div className="min-h-24 p-4">
+      <p className={cn(
+        'text-xs font-semibold uppercase tracking-wide',
+        tone === 'primary' && 'text-primary',
+        tone === 'success' && 'text-success',
+        tone === 'warning' && 'text-warning',
+        tone === 'danger' && 'text-destructive',
+        tone === 'muted' && 'text-muted-foreground'
+      )}>
+        {label}
+      </p>
+      <p className="mt-1 text-2xl font-semibold tracking-tight text-foreground tabular-nums">
+        {value.toLocaleString()}
+      </p>
+      <p className="mt-1 text-xs text-muted-foreground">{helper}</p>
+    </div>
+  )
 }
 
 function StatusBadge({ status }: { status: string }) {

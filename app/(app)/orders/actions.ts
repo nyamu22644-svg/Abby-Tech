@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { logOrderCreated, logOrderPaymentReceived, logOrderBatchAllocated } from '@/lib/audit'
+import { learnCustomerPreferences, runOrderAutomation } from '@/lib/automation/order-automation'
 
 type BatchAvailabilityCandidate = {
   id: string
@@ -16,12 +17,20 @@ type BatchAvailabilityCandidate = {
   available: number
 }
 
+const DEFAULT_BREEDS = [
+  'KARI Improved Kienyeji',
+  'Improved Kienyeji',
+  'Broiler',
+  'Layer',
+  'Local Kienyeji',
+]
+
 const createOrderSchema = z.object({
   customer_name: z.string().min(1, 'Customer name is required'),
   customer_phone: z.string().optional(),
   location: z.string().optional(),
   quantity: z.number().int().positive('Quantity must be greater than 0'),
-  breed_type: z.string().optional(),
+  breed_type: z.string().min(1, 'Select a breed from Settings'),
   price_per_chick: z.number().min(0).default(130),
   discount_amount: z.number().min(0).default(0),
   expected_hatch_date: z.string().optional(),
@@ -29,13 +38,17 @@ const createOrderSchema = z.object({
 })
 
 export async function createOrder(formData: FormData) {
+  const supabase = await createClient()
+  const db = supabase as any
+  const defaults = await getOrderDefaults(db)
+
   const result = createOrderSchema.safeParse({
     customer_name: formData.get('customer_name'),
     customer_phone: formData.get('customer_phone') || undefined,
     location: formData.get('location') || undefined,
     quantity: Number(formData.get('quantity')),
     breed_type: normalizeOptionalText(formData.get('breed_type')),
-    price_per_chick: Number(formData.get('price_per_chick') || 130),
+    price_per_chick: Number(formData.get('price_per_chick') || defaults.defaultChickPrice),
     discount_amount: Number(formData.get('discount_amount') || 0),
     expected_hatch_date: formData.get('expected_hatch_date') || undefined,
     notes: formData.get('notes') || undefined,
@@ -45,15 +58,20 @@ export async function createOrder(formData: FormData) {
     return { success: false, errors: result.error.flatten().fieldErrors, error: 'Invalid formulation' }
   }
 
-  const supabase = await createClient()
-  const db = supabase as any
+  const catalogBreed = findCatalogBreed(result.data.breed_type, defaults.breedOptions)
+  if (!catalogBreed) {
+    return {
+      success: false,
+      error: 'Select a valid breed from Settings before creating this order.',
+    }
+  }
 
   const { data: rpcResult, error: rpcError } = await db.rpc('create_order_atomic', {
     p_customer_name: result.data.customer_name,
     p_customer_phone: result.data.customer_phone || null,
     p_location: result.data.location || null,
     p_quantity: result.data.quantity,
-    p_breed_type: result.data.breed_type || null,
+    p_breed_type: catalogBreed,
     p_price_per_chick: result.data.price_per_chick,
     p_discount_amount: result.data.discount_amount,
     p_expected_hatch_date: result.data.expected_hatch_date || null,
@@ -62,6 +80,10 @@ export async function createOrder(formData: FormData) {
 
   if (!rpcError) {
     const createdOrder = Array.isArray(rpcResult) ? rpcResult[0] : rpcResult
+    if (createdOrder?.customer_id) {
+      await learnCustomerPreferences(db, [createdOrder.customer_id])
+    }
+    await runOrderAutomation(db)
     revalidatePath('/orders')
     if (createdOrder?.allocated_batch_id) {
       revalidatePath(`/batches/${createdOrder.allocated_batch_id}`)
@@ -113,7 +135,7 @@ export async function createOrder(formData: FormData) {
     db,
     result.data.quantity,
     result.data.expected_hatch_date,
-    result.data.breed_type
+    catalogBreed
   )
   const shouldAutoAllocate = Boolean(autoAllocation)
 
@@ -142,7 +164,7 @@ export async function createOrder(formData: FormData) {
 
   const { error: itemError } = await db.from('order_items').insert({
     order_id: orderData.id,
-    description: result.data.breed_type ? `Day-old chicks - ${result.data.breed_type}` : 'Day-old chicks',
+    description: `Day-old chicks - ${catalogBreed}`,
     quantity: result.data.quantity,
     unit_price: result.data.price_per_chick,
     total_price: subtotal_amount,
@@ -162,11 +184,29 @@ export async function createOrder(formData: FormData) {
     await logOrderBatchAllocated(orderData.id, autoAllocation.id, result.data.quantity)
   }
 
+  await learnCustomerPreferences(db, [customerId])
+  await runOrderAutomation(db)
+
   revalidatePath('/orders')
   if (autoAllocation) {
     revalidatePath(`/batches/${autoAllocation.id}`)
   }
   return { success: true }
+}
+
+async function getOrderDefaults(db: any) {
+  const { data: settings } = await db
+    .from('business_settings')
+    .select('default_chick_price, breed_options')
+    .limit(1)
+    .maybeSingle()
+
+  return {
+    defaultChickPrice: Number(settings?.default_chick_price ?? 130),
+    breedOptions: Array.isArray(settings?.breed_options) && settings.breed_options.length > 0
+      ? settings.breed_options
+      : DEFAULT_BREEDS,
+  }
 }
 
 export async function updateOrderStatus(id: string, status: string, additionalUpdates: any = {}) {
@@ -407,6 +447,12 @@ function normalizeBreed(value?: string | null) {
     .replace(/\s+/g, ' ')
 }
 
+function findCatalogBreed(value: string, breedOptions: string[]) {
+  const requestedValue = normalizeBreed(value)
+  if (!requestedValue) return null
+  return breedOptions.find((breed) => normalizeBreed(breed) === requestedValue) || null
+}
+
 function isBreedMatch(batchBreed?: string | null, requestedBreed?: string | null) {
   const batchValue = normalizeBreed(batchBreed)
   const requestedValue = normalizeBreed(requestedBreed)
@@ -452,6 +498,7 @@ export async function recordPayment(id: string, amount: number, paymentMethod = 
   const newBalance = Number(payment?.balance_due ?? 0)
   const previousBalance = newBalance + amount
   await logOrderPaymentReceived(id, amount, previousBalance, newBalance)
+  await runOrderAutomation(db)
 
   revalidatePath('/orders')
   revalidatePath(`/orders/${id}`)

@@ -2,7 +2,9 @@ import { Metadata, Viewport } from 'next'
 import { Suspense } from 'react'
 
 import { AbbytechLogo } from '@/components/branding/logo'
+import { PoweredByEdgait } from '@/components/branding/powered-by-edgait'
 import { TelemetryBackground, OperationalMetrics } from '@/components/layout/telemetry-background'
+import { SYSTEM_BRANDING } from '@/lib/branding'
 import { GlassmorphicLoginForm } from './components/glassmorphic-login-form'
 
 export const metadata: Metadata = {
@@ -75,8 +77,11 @@ export default function LoginPage() {
         </div>
 
         <div className="space-y-1">
-          <div className="font-mono text-xs text-slate-500">Operational System v1.0 - Premium Edition</div>
+          <div className="font-mono text-xs text-slate-500">
+            Operational System v{SYSTEM_BRANDING.appVersion} - {SYSTEM_BRANDING.edition}
+          </div>
           <div className="text-xs text-slate-600">Abbye Chicks. All operational systems secured.</div>
+          <PoweredByEdgait />
         </div>
       </div>
 
@@ -90,6 +95,10 @@ export default function LoginPage() {
           <Suspense fallback={null}>
             <GlassmorphicLoginForm />
           </Suspense>
+
+          <div className="mt-6 flex justify-center lg:hidden">
+            <PoweredByEdgait />
+          </div>
         </div>
       </div>
     </div>

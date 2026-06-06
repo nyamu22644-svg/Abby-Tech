@@ -30,6 +30,30 @@ const breedCatalogSchema = z.object({
   breed_options: z.string().trim().optional(),
 })
 
+const costRulesSchema = z.object({
+  electricity_cost_per_unit: z.coerce.number().min(0),
+  incubator_units_per_day: z.coerce.number().min(0),
+  brooder_units_per_day: z.coerce.number().min(0),
+  hatchery_labor_cost_per_day: z.coerce.number().min(0),
+  generator_fuel_cost_per_day: z.coerce.number().min(0),
+  brooder_labor_cost_per_day: z.coerce.number().min(0),
+  starter_feed_price_per_kg: z.coerce.number().min(0),
+  starter_feed_grams_per_chick_day: z.coerce.number().min(0),
+  grower_feed_price_per_kg: z.coerce.number().min(0),
+  grower_feed_grams_per_chick_day: z.coerce.number().min(0),
+  grower_feed_starts_day: z.coerce.number().int().min(1),
+  holding_overhead_cost_per_day: z.coerce.number().min(0),
+  target_profit_margin_percent: z.coerce.number().min(0),
+})
+
+const vaccinationScheduleSchema = z.object({
+  required_vaccination_rules: z.string().trim().optional(),
+})
+
+const orderSettingsSchema = z.object({
+  reservation_expiry_days: z.coerce.number().int().min(0).max(365),
+})
+
 const profileRoleSchema = z.object({
   first_name: z.string().trim().optional(),
   last_name: z.string().trim().optional(),
@@ -203,6 +227,109 @@ export async function saveBreedCatalog(formData: FormData) {
 
   revalidateSettings()
   redirect('/settings?saved=breeds')
+}
+
+export async function saveCostRules(formData: FormData) {
+  const parsed = costRulesSchema.safeParse({
+    electricity_cost_per_unit: formData.get('electricity_cost_per_unit'),
+    incubator_units_per_day: formData.get('incubator_units_per_day'),
+    brooder_units_per_day: formData.get('brooder_units_per_day'),
+    hatchery_labor_cost_per_day: formData.get('hatchery_labor_cost_per_day'),
+    generator_fuel_cost_per_day: formData.get('generator_fuel_cost_per_day'),
+    brooder_labor_cost_per_day: formData.get('brooder_labor_cost_per_day'),
+    starter_feed_price_per_kg: formData.get('starter_feed_price_per_kg'),
+    starter_feed_grams_per_chick_day: formData.get('starter_feed_grams_per_chick_day'),
+    grower_feed_price_per_kg: formData.get('grower_feed_price_per_kg'),
+    grower_feed_grams_per_chick_day: formData.get('grower_feed_grams_per_chick_day'),
+    grower_feed_starts_day: formData.get('grower_feed_starts_day'),
+    holding_overhead_cost_per_day: formData.get('holding_overhead_cost_per_day'),
+    target_profit_margin_percent: formData.get('target_profit_margin_percent'),
+  })
+
+  if (!parsed.success) redirectWithError('Check the cost rule values and try again.')
+
+  const supabase = await createClient()
+  const { tenantId } = await ensureTenantForUser(supabase)
+  const db = supabase as any
+  const settingsBase = await getBusinessSettingsUpsertBase(db, tenantId)
+
+  const { error } = await db
+    .from('business_settings')
+    .upsert(
+      {
+        ...settingsBase,
+        tenant_id: tenantId,
+        ...parsed.data,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'tenant_id' }
+    )
+
+  if (error) redirectWithError(error.message || 'Failed to save cost rules.')
+
+  revalidateSettings()
+  redirect('/settings?section=costs&saved=costs')
+}
+
+export async function saveVaccinationSchedule(formData: FormData) {
+  const parsed = vaccinationScheduleSchema.safeParse({
+    required_vaccination_rules: formData.get('required_vaccination_rules'),
+  })
+
+  if (!parsed.success) redirectWithError('Check the vaccination schedule and try again.')
+
+  const rules = parseVaccinationRules(parsed.data.required_vaccination_rules || '')
+  const supabase = await createClient()
+  const { tenantId } = await ensureTenantForUser(supabase)
+  const db = supabase as any
+  const settingsBase = await getBusinessSettingsUpsertBase(db, tenantId)
+
+  const { error } = await db
+    .from('business_settings')
+    .upsert(
+      {
+        ...settingsBase,
+        tenant_id: tenantId,
+        required_vaccination_rules: rules,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'tenant_id' }
+    )
+
+  if (error) redirectWithError(error.message || 'Failed to save vaccination schedule.')
+
+  revalidateSettings()
+  redirect('/settings?section=vaccinations&saved=vaccinations')
+}
+
+export async function saveOrderSettings(formData: FormData) {
+  const parsed = orderSettingsSchema.safeParse({
+    reservation_expiry_days: formData.get('reservation_expiry_days'),
+  })
+
+  if (!parsed.success) redirectWithError('Check the order settings and try again.')
+
+  const supabase = await createClient()
+  const { tenantId } = await ensureTenantForUser(supabase)
+  const db = supabase as any
+  const settingsBase = await getBusinessSettingsUpsertBase(db, tenantId)
+
+  const { error } = await db
+    .from('business_settings')
+    .upsert(
+      {
+        ...settingsBase,
+        tenant_id: tenantId,
+        reservation_expiry_days: parsed.data.reservation_expiry_days,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'tenant_id' }
+    )
+
+  if (error) redirectWithError(error.message || 'Failed to save order settings.')
+
+  revalidateSettings()
+  redirect('/settings?section=orders&saved=orders')
 }
 
 export async function saveCurrentUserProfileAndRole(formData: FormData) {
@@ -620,6 +747,29 @@ function revalidateSettings() {
 
 function redirectWithError(message: string): never {
   redirect(`/settings?error=${encodeURIComponent(message)}`)
+}
+
+function parseVaccinationRules(value: string) {
+  return value
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [name, dueDay, costPerChick, required] = line.split('|').map((part) => part.trim())
+      const dueDayNumber = Number(dueDay)
+      const costNumber = Number(costPerChick)
+
+      if (!name || !Number.isFinite(dueDayNumber) || dueDayNumber < 0 || !Number.isFinite(costNumber) || costNumber < 0) {
+        redirectWithError('Use this vaccination format: Vaccine name | day | cost per chick | required')
+      }
+
+      return {
+        name,
+        due_day: Math.round(dueDayNumber),
+        cost_per_chick: costNumber,
+        required: (required || 'required').toLowerCase() !== 'optional',
+      }
+    })
 }
 
 function hashSecret(value: string) {

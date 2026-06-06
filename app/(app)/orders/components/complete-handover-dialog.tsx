@@ -19,11 +19,15 @@ import { completeOrderHandover } from '../actions'
 export function CompleteHandoverDialog({
   orderId,
   customerName,
+  customerPhone,
+  customerLocation,
   remainingQuantity,
   compact = false,
 }: {
   orderId: string
   customerName: string
+  customerPhone?: string
+  customerLocation?: string
   remainingQuantity?: number
   compact?: boolean
 }) {
@@ -34,7 +38,7 @@ export function CompleteHandoverDialog({
   const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
   const [handoverType, setHandoverType] = useState<'PICKUP' | 'DELIVERY'>('PICKUP')
   const [contactName, setContactName] = useState(customerName || '')
-  const [contactPhone, setContactPhone] = useState('')
+  const [contactPhone, setContactPhone] = useState(customerPhone || '')
   const [vehicleNumber, setVehicleNumber] = useState('')
   const [handoverQuantity, setHandoverQuantity] = useState(remainingQuantity || 0)
   const [notes, setNotes] = useState('')
@@ -52,7 +56,7 @@ export function CompleteHandoverDialog({
         contactPhone,
         vehicleNumber,
         handoverQuantity: remainingQuantity ? handoverQuantity : undefined,
-        notes,
+        notes: buildHandoverNotes(notes, handoverType, customerLocation),
       })
 
       if (!result.success) {
@@ -165,16 +169,23 @@ export function CompleteHandoverDialog({
           ) : null}
 
           {handoverType === 'DELIVERY' ? (
-            <div className="space-y-1.5">
-              <label htmlFor="vehicle_number" className="text-xs font-semibold text-muted-foreground">Vehicle / Rider <span className="font-medium">(optional)</span></label>
-              <input
-                id="vehicle_number"
-                value={vehicleNumber}
-                onChange={(event) => setVehicleNumber(event.target.value)}
-                placeholder="Vehicle number, rider, or delivery reference"
-                className="h-9 w-full rounded-input border border-input bg-background px-3 text-sm outline-none transition-all focus:border-primary focus:ring-4 focus:ring-primary/10"
-              />
-            </div>
+            <>
+              {customerLocation ? (
+                <div className="rounded-button border border-primary/15 bg-primary/5 px-3 py-2 text-xs text-primary">
+                  Delivery location: <span className="font-semibold">{customerLocation}</span>
+                </div>
+              ) : null}
+              <div className="space-y-1.5">
+                <label htmlFor="vehicle_number" className="text-xs font-semibold text-muted-foreground">Vehicle / Rider <span className="font-medium">(optional)</span></label>
+                <input
+                  id="vehicle_number"
+                  value={vehicleNumber}
+                  onChange={(event) => setVehicleNumber(event.target.value)}
+                  placeholder="Vehicle number, rider, or delivery reference"
+                  className="h-9 w-full rounded-input border border-input bg-background px-3 text-sm outline-none transition-all focus:border-primary focus:ring-4 focus:ring-primary/10"
+                />
+              </div>
+            </>
           ) : null}
 
           <div className="space-y-1.5">
@@ -201,4 +212,12 @@ export function CompleteHandoverDialog({
       </DialogContent>
     </Dialog>
   )
+}
+
+function buildHandoverNotes(notes: string, handoverType: 'PICKUP' | 'DELIVERY', customerLocation?: string) {
+  const trimmedNotes = notes.trim()
+  if (handoverType !== 'DELIVERY' || !customerLocation) return trimmedNotes
+
+  const locationNote = `Delivery location: ${customerLocation}`
+  return trimmedNotes ? `${locationNote}. ${trimmedNotes}` : locationNote
 }

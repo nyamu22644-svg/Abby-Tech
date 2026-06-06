@@ -57,6 +57,13 @@ export const BRANDING = {
   region: 'Kenya',
 }
 
+export const SYSTEM_BRANDING = {
+  appVersion: '1.3.0',
+  edition: 'Premium Edition',
+  vendorName: 'Edgait Solutions',
+  vendorUrl: 'https://edgaitmdm.tech',
+}
+
 export const AUTH_MESSAGES = {
   // Loading states
   authenticating: 'Verifying credentials...',

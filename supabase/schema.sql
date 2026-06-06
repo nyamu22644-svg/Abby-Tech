@@ -118,6 +118,28 @@ CREATE TABLE business_settings (
     default_incubation_days integer NOT NULL DEFAULT 21 CHECK (default_incubation_days > 0),
     default_hatch_rate_target numeric(5,2) NOT NULL DEFAULT 85.00 CHECK (default_hatch_rate_target >= 0),
     default_chick_price numeric(12,2) NOT NULL DEFAULT 0 CHECK (default_chick_price >= 0),
+    receipt_title varchar(255),
+    receipt_tagline text,
+    receipt_phone varchar(50),
+    receipt_location text,
+    receipt_footer text,
+    receipt_show_system_branding boolean NOT NULL DEFAULT true,
+    breed_options jsonb NOT NULL DEFAULT '[]'::jsonb,
+    electricity_cost_per_unit numeric(12,2) NOT NULL DEFAULT 25 CHECK (electricity_cost_per_unit >= 0),
+    incubator_units_per_day numeric(10,2) NOT NULL DEFAULT 10 CHECK (incubator_units_per_day >= 0),
+    brooder_units_per_day numeric(10,2) NOT NULL DEFAULT 4 CHECK (brooder_units_per_day >= 0),
+    hatchery_labor_cost_per_day numeric(12,2) NOT NULL DEFAULT 0 CHECK (hatchery_labor_cost_per_day >= 0),
+    generator_fuel_cost_per_day numeric(12,2) NOT NULL DEFAULT 0 CHECK (generator_fuel_cost_per_day >= 0),
+    brooder_labor_cost_per_day numeric(12,2) NOT NULL DEFAULT 0 CHECK (brooder_labor_cost_per_day >= 0),
+    starter_feed_price_per_kg numeric(12,2) NOT NULL DEFAULT 80 CHECK (starter_feed_price_per_kg >= 0),
+    starter_feed_grams_per_chick_day numeric(10,2) NOT NULL DEFAULT 15 CHECK (starter_feed_grams_per_chick_day >= 0),
+    grower_feed_price_per_kg numeric(12,2) NOT NULL DEFAULT 80 CHECK (grower_feed_price_per_kg >= 0),
+    grower_feed_grams_per_chick_day numeric(10,2) NOT NULL DEFAULT 35 CHECK (grower_feed_grams_per_chick_day >= 0),
+    grower_feed_starts_day integer NOT NULL DEFAULT 8 CHECK (grower_feed_starts_day > 0),
+    holding_overhead_cost_per_day numeric(12,2) NOT NULL DEFAULT 0 CHECK (holding_overhead_cost_per_day >= 0),
+    target_profit_margin_percent numeric(5,2) NOT NULL DEFAULT 25 CHECK (target_profit_margin_percent >= 0),
+    required_vaccination_rules jsonb NOT NULL DEFAULT '[]'::jsonb,
+    reservation_expiry_days integer NOT NULL DEFAULT 3 CHECK (reservation_expiry_days >= 0),
     alerts_enabled boolean NOT NULL DEFAULT true,
     created_at timestamp with time zone NOT NULL DEFAULT now(),
     updated_at timestamp with time zone NOT NULL DEFAULT now(),
@@ -749,6 +771,29 @@ CREATE TABLE profitability_snapshots (
 
 CREATE INDEX idx_profitability_snapshots_batch ON profitability_snapshots(batch_id, created_at DESC);
 
+CREATE TABLE batch_vaccination_records (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id uuid REFERENCES tenants(id) ON DELETE RESTRICT,
+    batch_id uuid NOT NULL REFERENCES egg_batches(id) ON DELETE CASCADE,
+    vaccine_name varchar(255) NOT NULL,
+    due_day integer NOT NULL DEFAULT 0 CHECK (due_day >= 0),
+    due_date date NOT NULL,
+    cost_per_chick numeric(12,2) NOT NULL DEFAULT 0 CHECK (cost_per_chick >= 0),
+    completed_at timestamp with time zone NOT NULL DEFAULT now(),
+    notes text,
+    recorded_by uuid REFERENCES user_profiles(id) ON DELETE SET NULL,
+    created_at timestamp with time zone NOT NULL DEFAULT now(),
+    updated_at timestamp with time zone NOT NULL DEFAULT now(),
+    deleted_at timestamp with time zone,
+    sync_version integer NOT NULL DEFAULT 1 CHECK (sync_version >= 1),
+    client_updated_at timestamp with time zone,
+    last_synced_at timestamp with time zone,
+    UNIQUE (batch_id, vaccine_name, due_day)
+);
+
+CREATE INDEX idx_batch_vaccination_records_batch ON batch_vaccination_records(batch_id, due_date) WHERE deleted_at IS NULL;
+CREATE INDEX idx_batch_vaccination_records_due ON batch_vaccination_records(due_date, completed_at) WHERE deleted_at IS NULL;
+
 -- ============================================================================
 -- TELEMETRY READINGS
 -- ============================================================================
@@ -1030,6 +1075,10 @@ FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TRIGGER set_updated_at_cost_entries
 BEFORE UPDATE ON cost_entries
+FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+
+CREATE TRIGGER set_updated_at_batch_vaccination_records
+BEFORE UPDATE ON batch_vaccination_records
 FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
 CREATE TRIGGER set_updated_at_alert_rules

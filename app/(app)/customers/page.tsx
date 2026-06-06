@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { Banknote, Clock, MapPin, Phone, Search, TrendingUp, UsersRound, Wallet } from 'lucide-react'
 
 import { Card } from '@/components/ui/card'
+import { runOrderAutomation } from '@/lib/automation/order-automation'
 import { createClient } from '@/lib/supabase/server'
 import { cn } from '@/lib/utils'
 import { CreateCustomerDialog } from './components/create-customer-dialog'
@@ -25,6 +26,8 @@ export default async function CustomersPage({ searchParams }: CustomersPageProps
   const db = supabase as any
   const params = searchParams ? await searchParams : {}
   const query = (params.q || '').trim()
+
+  await runOrderAutomation(db)
 
   const { data: customers } = await db
     .from('customers')

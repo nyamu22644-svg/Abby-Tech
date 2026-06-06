@@ -4,6 +4,7 @@ import { createClient } from '@/lib/supabase/server'
 import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { logBatchCreated, logBatchUpdated, logBatchStatusChange, logOperationalCostAdded } from '@/lib/audit'
+import { runOrderAutomation } from '@/lib/automation/order-automation'
 import { getCurrentUserProfile, requireAuth, requireRole } from '@/lib/auth'
 import type { CompleteBatchWorkflow } from '@/types/batch-workflow.types'
 import { CANDLING_WINDOW_START_DAY, LOCKDOWN_DAY } from '@/lib/incubation/rules'
@@ -11,6 +12,7 @@ import { CANDLING_WINDOW_START_DAY, LOCKDOWN_DAY } from '@/lib/incubation/rules'
 // Comprehensive batch workflow schema
 const workflowBatchSchema = z.object({
   supplier: z.object({
+    supplierId: z.string().optional(),
     supplierName: z.string().min(1),
     contactPerson: z.string().optional(),
     phone: z.string().optional(),
@@ -77,9 +79,153 @@ type IncubatorAllocationPlan = {
   summary: string
 }
 
+const DEFAULT_BREEDS = [
+  'KARI Improved Kienyeji',
+  'Improved Kienyeji',
+  'Broiler',
+  'Layer',
+  'Local Kienyeji',
+]
+
 function toIsoString(value: Date | string | null | undefined) {
   if (!value) return null
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
+}
+
+function addDaysToDate(value: Date | string, days: number) {
+  const date = value instanceof Date ? new Date(value) : new Date(value)
+  date.setDate(date.getDate() + days)
+  return date
+}
+
+async function getBatchDefaults(supabase: SupabaseServerClient, tenantId: string | null) {
+  let query = supabase
+    .from('business_settings')
+    .select('default_incubation_days, breed_options')
+    .limit(1)
+
+  query = tenantId ? query.eq('tenant_id', tenantId) : query
+
+  const { data } = await query.maybeSingle()
+  return {
+    defaultIncubationDays: Number(data?.default_incubation_days || 21),
+    breedOptions: Array.isArray(data?.breed_options) && data.breed_options.length > 0
+      ? data.breed_options
+      : DEFAULT_BREEDS,
+  }
+}
+
+function normalizeBreed(value?: string | null) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+}
+
+function normalizeEntityText(value?: string | null) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+}
+
+function findCatalogBreed(value: string, breedOptions: string[]) {
+  const requestedValue = normalizeBreed(value)
+  if (!requestedValue) return null
+  return breedOptions.find((breed) => normalizeBreed(breed) === requestedValue) || null
+}
+
+async function findReusableSupplier(
+  supabase: SupabaseServerClient,
+  tenantId: string | null,
+  supplier: z.infer<typeof workflowBatchSchema>['supplier']
+) {
+  if (supplier.supplierId) {
+    let query = supabase
+      .from('suppliers')
+      .select('id, name, contact_name, phone, email, address')
+      .eq('id', supplier.supplierId)
+      .is('deleted_at', null)
+      .limit(1)
+
+    query = tenantId ? query.eq('tenant_id', tenantId) : query.is('tenant_id', null)
+
+    const { data, error } = await query.maybeSingle()
+    if (error) return { error: error.message }
+    if (data) return { supplier: data }
+  }
+
+  const phone = supplier.phone?.trim()
+  const email = supplier.email?.trim()
+  const supplierNameNorm = normalizeEntityText(supplier.supplierName)
+
+  if (phone) {
+    let query = supabase
+      .from('suppliers')
+      .select('id, name, contact_name, phone, email, address')
+      .eq('phone', phone)
+      .is('deleted_at', null)
+      .limit(1)
+
+    query = tenantId ? query.eq('tenant_id', tenantId) : query.is('tenant_id', null)
+
+    const { data, error } = await query.maybeSingle()
+    if (error) return { error: error.message }
+    if (data) return { supplier: data }
+  }
+
+  if (email) {
+    let query = supabase
+      .from('suppliers')
+      .select('id, name, contact_name, phone, email, address')
+      .ilike('email', email)
+      .is('deleted_at', null)
+      .limit(1)
+
+    query = tenantId ? query.eq('tenant_id', tenantId) : query.is('tenant_id', null)
+
+    const { data, error } = await query.maybeSingle()
+    if (error) return { error: error.message }
+    if (data) return { supplier: data }
+  }
+
+  let nameQuery = supabase
+    .from('suppliers')
+    .select('id, name, contact_name, phone, email, address')
+    .is('deleted_at', null)
+    .limit(500)
+
+  nameQuery = tenantId ? nameQuery.eq('tenant_id', tenantId) : nameQuery.is('tenant_id', null)
+
+  const { data: suppliers, error } = await nameQuery
+  if (error) return { error: error.message }
+
+  const supplierMatch = (suppliers || []).find((entry) => normalizeEntityText(entry.name) === supplierNameNorm)
+  return { supplier: supplierMatch || null }
+}
+
+async function refreshSupplierDetails(
+  supabase: SupabaseServerClient,
+  supplierId: string,
+  supplier: z.infer<typeof workflowBatchSchema>['supplier']
+) {
+  const updates: Record<string, string> = {}
+  if (supplier.contactPerson?.trim()) updates.contact_name = supplier.contactPerson.trim()
+  if (supplier.phone?.trim()) updates.phone = supplier.phone.trim()
+  if (supplier.email?.trim()) updates.email = supplier.email.trim()
+  if (supplier.location?.trim()) updates.address = supplier.location.trim()
+
+  if (Object.keys(updates).length === 0) return
+
+  await supabase
+    .from('suppliers')
+    .update({
+      ...updates,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', supplierId)
 }
 
 async function buildIncubatorAllocationPlan(
@@ -200,6 +346,11 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
     }
 
     const profile = profileResult.profile
+    const batchDefaults = await getBatchDefaults(supabase, profile.tenant_id || null)
+    const catalogBreed = findCatalogBreed(workflow.reception.breedType, batchDefaults.breedOptions)
+    if (!catalogBreed) {
+      return { success: false, error: 'Select a valid breed from Settings before creating this batch.' }
+    }
 
     // Generate batch number with timestamp and random suffix
     const now = new Date()
@@ -224,25 +375,17 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
     let supplierId: string | null = null
 
     if (supplierName) {
-      let supplierQuery = supabase
-        .from('suppliers')
-        .select('id')
-        .eq('name', supplierName)
+      const reusableSupplier = await findReusableSupplier(supabase, profile.tenant_id || null, workflow.supplier)
 
-      if (profile.tenant_id) {
-        supplierQuery = supplierQuery.eq('tenant_id', profile.tenant_id)
-      } else {
-        supplierQuery = supplierQuery.is('tenant_id', null)
+      if (reusableSupplier.error) {
+        return { success: false, error: reusableSupplier.error }
       }
 
-      const { data: existingSupplier, error: supplierFetchError } = await supplierQuery.maybeSingle()
-
-      if (supplierFetchError) {
-        return { success: false, error: supplierFetchError.message }
-      }
-
-      if (existingSupplier) {
-        supplierId = existingSupplier.id
+      if (reusableSupplier.supplier) {
+        supplierId = reusableSupplier.supplier.id
+        if (supplierId) {
+          await refreshSupplierDetails(supabase, supplierId, workflow.supplier)
+        }
       } else {
         const { data: newSupplier, error: supplierInsertError } = await supabase
           .from('suppliers')
@@ -293,7 +436,9 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
     }
 
     const setDate = hasAssignment ? toIsoString(workflow.incubationAssignment!.setDate) : null
-    const expectedHatchDate = hasAssignment ? toIsoString(workflow.incubationAssignment!.expectedHatchDate) : null
+    const expectedHatchDate = hasAssignment
+      ? toIsoString(addDaysToDate(workflow.incubationAssignment!.setDate, batchDefaults.defaultIncubationDays))
+      : null
     const incubatorId = hasAssignment ? workflow.incubationAssignment!.incubatorId : null
     const batchStatus = hasAssignment ? 'SETTER' : 'LOGGED'
     const quantitySet = hasAssignment ? acceptedEggs : null
@@ -312,7 +457,7 @@ export async function createBatch(workflow: CompleteBatchWorkflow) {
         date_received: toIsoString(workflow.reception.dateReceived),
         received_by: workflow.reception.receivedBy || profile.id || null,
         received_by_name: workflow.reception.receivedByName.trim(),
-        breed_type: workflow.reception.breedType,
+        breed_type: catalogBreed,
         invoice_number: workflow.supplier.invoiceNumber || null,
         contact_person: workflow.supplier.contactPerson || null,
         supplier_phone: workflow.supplier.phone || null,
@@ -839,6 +984,7 @@ export async function moveBatchToHatcher(id: string, notes?: string) {
 
 export async function recordHatch(id: string, hatchedCount: number, finalCulledCount = 0, notes?: string) {
   const supabase = await createClient()
+  const db = supabase as any
 
   const { data: currentBatch, error: fetchError } = await supabase
     .from('egg_batches')
@@ -859,7 +1005,7 @@ export async function recordHatch(id: string, hatchedCount: number, finalCulledC
   }
 
   const recordedBy = await getCurrentUserId(supabase)
-  const { error } = await (supabase as any).rpc('record_hatch_atomic', {
+  const { error } = await db.rpc('record_hatch_atomic', {
     p_batch_id: id,
     p_hatched_count: hatchedCount,
     p_final_culled_count: finalCulledCount,
@@ -875,6 +1021,9 @@ export async function recordHatch(id: string, hatchedCount: number, finalCulledC
     await logBatchStatusChange(id, currentBatch.status, 'COMPLETED')
   }
 
+  await markPaidOrdersReadyForHandover(db, id)
+  await runOrderAutomation(db)
+
   revalidatePath('/batches')
   revalidatePath(`/batches/${id}`)
   revalidatePath('/incubation')
@@ -882,6 +1031,55 @@ export async function recordHatch(id: string, hatchedCount: number, finalCulledC
   revalidatePath('/orders')
   revalidatePath('/alerts')
   return { success: true }
+}
+
+async function markPaidOrdersReadyForHandover(db: any, batchId: string) {
+  const [{ data: batch }, { data: allocatedItems }] = await Promise.all([
+    db
+      .from('egg_batches')
+      .select('quantity_hatched, quantity_culled, mortality_count')
+      .eq('id', batchId)
+      .maybeSingle(),
+    db
+      .from('order_items')
+      .select('order_id, quantity')
+      .eq('batch_id', batchId)
+      .neq('status', 'CANCELLED'),
+  ])
+
+  const totalAllocated = (allocatedItems || []).reduce((sum: number, item: any) => sum + Number(item.quantity || 0), 0)
+  const availableChicks = Math.max(
+    Number(batch?.quantity_hatched || 0) -
+      Number(batch?.quantity_culled || 0) -
+      Number(batch?.mortality_count || 0),
+    0
+  )
+
+  if (totalAllocated > availableChicks) return
+
+  const orderIds = Array.from(new Set((allocatedItems || []).map((item: any) => item.order_id).filter(Boolean)))
+  if (orderIds.length === 0) return
+
+  await db
+    .from('order_items')
+    .update({
+      status: 'ALLOCATED',
+      updated_at: new Date().toISOString(),
+    })
+    .eq('batch_id', batchId)
+    .neq('status', 'CANCELLED')
+
+  await db
+    .from('orders')
+    .update({
+      status: 'READY_FOR_DISPATCH',
+      dispatch_status: 'SCHEDULED',
+      updated_at: new Date().toISOString(),
+    })
+    .in('id', orderIds)
+    .eq('payment_status', 'PAID')
+    .in('status', ['ALLOCATED', 'CONFIRMED', 'RESERVED'])
+    .is('deleted_at', null)
 }
 
 const operationalCostSchema = z.object({

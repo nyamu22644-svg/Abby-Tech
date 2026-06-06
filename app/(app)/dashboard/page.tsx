@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   Cloud,
   CreditCard,
+  Calculator,
   Droplets,
   Eye,
   Handshake,
@@ -25,6 +26,7 @@ import { addDays, isPast } from 'date-fns'
 
 import { Card } from '@/components/ui/card'
 import { syncLifecycleAlerts } from '@/lib/alerts/lifecycle-alerts'
+import { calculateBatchCostSnapshot } from '@/lib/costing/batch-costing'
 import {
   CANDLING_WINDOW_END_DAY,
   CANDLING_WINDOW_LABEL,
@@ -90,6 +92,7 @@ export default async function DashboardPage() {
     ordersResult,
     incubatorsResult,
     settingsResult,
+    costEntriesResult,
   ] = await Promise.all([
     supabase
       .from('egg_batches')
@@ -133,7 +136,7 @@ export default async function DashboardPage() {
         required_by_date,
         created_at,
         customers(name),
-        order_items(id, batch_id, status),
+        order_items(id, batch_id, status, quantity, total_price),
         order_dispatches(handover_quantity)
       `)
       .is('deleted_at', null)
@@ -146,8 +149,12 @@ export default async function DashboardPage() {
       .limit(1),
     supabase
       .from('business_settings')
-      .select('id')
+      .select('*')
       .limit(1),
+    supabase
+      .from('cost_entries')
+      .select('batch_id, amount')
+      .is('deleted_at', null),
   ])
 
   const batches = (batchesResult.data || []) as DashboardBatch[]
@@ -155,6 +162,12 @@ export default async function DashboardPage() {
   const telemetryLogs = ((telemetryResult.data || []) as EnvironmentalLog[]).filter((log) => log.recorded_at)
   const hatchResults = (hatchResultsResult.data || []) as Record<string, any>[]
   const orders = (ordersResult.data || []) as DashboardOrder[]
+  const settings = Array.isArray(settingsResult.data) ? settingsResult.data[0] : null
+  const manualCostByBatch = ((costEntriesResult.data || []) as Record<string, any>[]).reduce((acc, entry) => {
+    if (!entry.batch_id) return acc
+    acc[entry.batch_id] = (acc[entry.batch_id] || 0) + Number(entry.amount || 0)
+    return acc
+  }, {} as Record<string, number>)
   const activeAlerts = alerts.filter((alert) => alert.status === 'ACTIVE')
   const setupWarnings = [
     ...(settingsResult.data && settingsResult.data.length > 0 ? [] : ['Save facility settings']),
@@ -173,6 +186,32 @@ export default async function DashboardPage() {
   const setterEggs = sumBy(activeSetters, getLoadedEggs)
   const hatcherEggs = sumBy(activeHatchers, getLoadedEggs)
   const activeLoadedEggs = setterEggs + hatcherEggs
+  const costingBatches = batches.filter((batch) => !TERMINAL_STATUSES.has(batch.status || ''))
+  const batchCostById = new Map(
+    costingBatches.map((batch) => [
+      batch.id,
+      calculateBatchCostSnapshot(batch, manualCostByBatch[batch.id] || 0, settings, today),
+    ])
+  )
+  const costedSnapshots = Array.from(batchCostById.values()).filter((snapshot) => snapshot.costPerChick > 0)
+  const totalRunningCost = costedSnapshots.reduce((total, snapshot) => total + snapshot.totalCost, 0)
+  const totalCostQuantity = costedSnapshots.reduce((total, snapshot) => total + snapshot.costQuantity, 0)
+  const averageCostPerChick = costedSnapshots.length > 0
+    ? totalRunningCost / totalCostQuantity
+    : 0
+  const averageMinimumPrice = costedSnapshots.length > 0
+    ? costedSnapshots.reduce((total, snapshot) => total + (snapshot.suggestedMinimumPrice * snapshot.costQuantity), 0) / totalCostQuantity
+    : 0
+  const lowPriceOrders = orders.filter((order) => {
+    const items = Array.isArray(order.order_items) ? order.order_items : []
+    return items.some((item: any) => {
+      if (item.status === 'CANCELLED' || !item.batch_id) return false
+      const snapshot = batchCostById.get(item.batch_id)
+      const quantity = Number(item.quantity || 0)
+      const itemPrice = quantity > 0 ? Number(item.total_price || 0) / quantity : 0
+      return Boolean(snapshot && itemPrice > 0 && itemPrice < snapshot.suggestedMinimumPrice)
+    })
+  })
 
   const candlingDue = activeSetters.filter((batch) => {
     if (!batch.set_date) return false
@@ -367,6 +406,51 @@ export default async function DashboardPage() {
           )
         })}
       </section>
+
+      <Card className="overflow-hidden">
+        <div className="flex flex-col gap-1 border-b border-border bg-muted/10 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-base font-semibold text-foreground">Cost & Price Check</h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Active batch cost and selling-price risk at a glance.
+            </p>
+          </div>
+          <Link href="/batches" className="inline-flex items-center gap-1 text-xs font-semibold text-primary hover:text-primary/80">
+            View batches
+            <ArrowUpRight className="h-3.5 w-3.5" />
+          </Link>
+        </div>
+        <div className="grid gap-3 p-4 sm:grid-cols-2 xl:grid-cols-4">
+          <OverviewCostMetric
+            icon={Calculator}
+            label="Running Batch Cost"
+            value={formatMoney(totalRunningCost)}
+            helper={`${costedSnapshots.length.toLocaleString()} active batch${costedSnapshots.length === 1 ? '' : 'es'} costed`}
+            tone="primary"
+          />
+          <OverviewCostMetric
+            icon={BarChart3}
+            label="Avg Cost / Chick"
+            value={formatMoney(averageCostPerChick)}
+            helper="Based on active batches"
+            tone="primary"
+          />
+          <OverviewCostMetric
+            icon={CreditCard}
+            label="Avg Minimum Price"
+            value={formatMoney(averageMinimumPrice)}
+            helper="Includes Target Profit Margin"
+            tone="success"
+          />
+          <OverviewCostMetric
+            icon={AlertTriangle}
+            label="Price Risk"
+            value={lowPriceOrders.length.toLocaleString()}
+            helper={lowPriceOrders.length > 0 ? 'Orders priced below suggested minimum' : 'No low-price orders found'}
+            tone={lowPriceOrders.length > 0 ? 'warning' : 'success'}
+          />
+        </div>
+      </Card>
 
       <Card className="overflow-hidden">
         <div className="flex flex-col gap-1 border-b border-border bg-muted/10 px-5 py-3.5 sm:flex-row sm:items-center sm:justify-between">
@@ -687,6 +771,44 @@ function WorkQueueRow({ item }: { item: WorkItem }) {
   )
 }
 
+function OverviewCostMetric({
+  icon: Icon,
+  label,
+  value,
+  helper,
+  tone,
+}: {
+  icon: LucideIcon
+  label: string
+  value: string
+  helper: string
+  tone: 'primary' | 'success' | 'warning'
+}) {
+  const toneClass = {
+    primary: 'bg-primary text-white shadow-[0_12px_24px_rgba(37,99,235,0.24)]',
+    success: 'bg-success text-white shadow-[0_12px_24px_rgba(45,212,111,0.20)]',
+    warning: 'bg-warning text-slate-950 shadow-[0_12px_24px_rgba(251,191,36,0.20)]',
+  }[tone]
+
+  return (
+    <div className="min-w-0 rounded-button border border-border bg-card p-3.5">
+      <div className="flex items-start gap-3">
+        <span className={cn('flex h-10 w-10 shrink-0 items-center justify-center rounded-full', toneClass)}>
+          <Icon className="h-4 w-4" />
+        </span>
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{label}</p>
+          <p className="mt-1 truncate text-lg font-semibold leading-none text-foreground">{value}</p>
+        </div>
+      </div>
+      <div className="mt-3 flex items-center gap-2 border-t border-border pt-2.5 text-xs font-medium text-muted-foreground">
+        <span className={cn('h-2.5 w-2.5 rounded-full', tone === 'warning' ? 'bg-warning' : 'bg-success')} />
+        {helper}
+      </div>
+    </div>
+  )
+}
+
 function getLoadedEggs(batch: DashboardBatch) {
   return Number(batch.quantity_set ?? batch.accepted_eggs ?? batch.quantity_received ?? 0)
 }
@@ -705,6 +827,12 @@ function formatDecimal(value: number, digits = 1) {
     minimumFractionDigits: digits,
     maximumFractionDigits: digits,
   })
+}
+
+function formatMoney(value?: number | null) {
+  const amount = Number(value || 0)
+  if (!Number.isFinite(amount) || amount <= 0) return '--'
+  return `KES ${amount.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
 }
 
 function isSameDay(left: Date, right: Date) {

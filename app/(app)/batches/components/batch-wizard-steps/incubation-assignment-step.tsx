@@ -12,6 +12,7 @@ import type { BatchIncubationAssignment } from '@/types/batch-workflow.types'
 interface IncubationAssignmentStepProps {
   initialData?: BatchIncubationAssignment
   acceptedEggs: number
+  incubationDays?: number
   onComplete: (data: BatchIncubationAssignment) => void
   onSkip: () => void
   formId: string
@@ -38,10 +39,10 @@ interface ExistingAllocation {
   eggs_allocated: number
 }
 
-function createDefaultAssignment(): BatchIncubationAssignment {
+function createDefaultAssignment(incubationDays: number): BatchIncubationAssignment {
   const setDate = new Date()
   const expectedHatchDate = new Date(setDate)
-  expectedHatchDate.setDate(expectedHatchDate.getDate() + 21)
+  expectedHatchDate.setDate(expectedHatchDate.getDate() + incubationDays)
 
   return {
     incubatorId: '',
@@ -155,12 +156,13 @@ function buildPlacementPlan(
 export function IncubationAssignmentStep({
   initialData,
   acceptedEggs,
+  incubationDays = 21,
   onComplete,
   onSkip,
   formId,
 }: IncubationAssignmentStepProps) {
   const [data, setData] = useState<BatchIncubationAssignment>(
-    initialData || createDefaultAssignment
+    initialData || createDefaultAssignment(incubationDays)
   )
   const [errors, setErrors] = useState<Record<string, string>>({})
   const [users, setUsers] = useState<UserProfileOption[]>([])
@@ -325,7 +327,7 @@ export function IncubationAssignmentStep({
         <div className="min-w-0">
           <p className="text-sm font-semibold text-foreground">Automatic Incubator Placement</p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Accepted eggs are placed into the incubator layout automatically. Hatch date is calculated as day 21
+            Accepted eggs are placed into the incubator layout automatically. Hatch date is calculated using the configured {incubationDays}-day cycle
             from the actual set date.
           </p>
         </div>
@@ -532,7 +534,7 @@ export function IncubationAssignmentStep({
                     e.target.value,
                     toLocalTimeInputValue(data.setDate)
                   )
-                  setData({ ...data, setDate, expectedHatchDate: addDays(setDate, 21) })
+                  setData({ ...data, setDate, expectedHatchDate: addDays(setDate, incubationDays) })
                 }}
                 className={cn('h-9 bg-background text-sm', errors.setDate && 'border-destructive focus-visible:ring-destructive/20')}
               />
@@ -552,7 +554,7 @@ export function IncubationAssignmentStep({
                     toLocalDateInputValue(data.setDate),
                     e.target.value
                   )
-                  setData({ ...data, setDate, expectedHatchDate: addDays(setDate, 21) })
+                  setData({ ...data, setDate, expectedHatchDate: addDays(setDate, incubationDays) })
                 }}
                 className={cn('h-9 bg-background text-sm', errors.setDate && 'border-destructive focus-visible:ring-destructive/20')}
               />
