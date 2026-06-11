@@ -117,6 +117,7 @@ export default async function DashboardPage() {
     supabase
       .from('mortality_events')
       .select('id, count, cause, recorded_at, egg_batches(batch_number)')
+      .is('voided_at', null)
       .order('recorded_at', { ascending: false })
       .limit(6),
     supabase

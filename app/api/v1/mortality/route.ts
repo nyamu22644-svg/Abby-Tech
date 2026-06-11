@@ -45,6 +45,7 @@ export const GET = apiHandler(async (req: NextRequest) => {
 
   // Get batch_id filter if provided
   const batchId = req.nextUrl.searchParams.get('batch_id');
+  const includeVoided = req.nextUrl.searchParams.get('include_voided') === 'true';
 
   let query = supabase
     .from('mortality_events')
@@ -54,6 +55,10 @@ export const GET = apiHandler(async (req: NextRequest) => {
 
   if (batchId) {
     query = query.eq('batch_id', batchId);
+  }
+
+  if (!includeVoided) {
+    query = query.is('voided_at', null);
   }
 
   const { data: events, count, error } = await query;

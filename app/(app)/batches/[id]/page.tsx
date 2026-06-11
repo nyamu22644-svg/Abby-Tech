@@ -7,10 +7,13 @@ import Link from 'next/link';
 import Image from 'next/image';
 import { addDays, isPast } from 'date-fns';
 import { createClient } from '@/lib/supabase/server';
+import { getCurrentUserProfile } from '@/lib/auth';
+import { isManagerOrAbove } from '@/lib/rbac';
 import { notFound } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { AddCostDialog } from '../components/add-cost-dialog';
 import { BatchLifecycleActionDialog } from '../components/batch-lifecycle-action-dialog';
+import { VoidMortalityDialog } from '../../mortality/components/void-mortality-dialog';
 import { calculateBatchCostSnapshot } from '@/lib/costing/batch-costing';
 import { CANDLING_WINDOW_LABEL, CANDLING_WINDOW_START_DAY, LOCKDOWN_DAY, LOCKDOWN_LABEL } from '@/lib/incubation/rules';
 
@@ -22,6 +25,8 @@ export const metadata: Metadata = {
 export default async function BatchDetailsPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
   const supabase = await createClient();
+  const currentUser = await getCurrentUserProfile();
+  const canVoidMortality = isManagerOrAbove(currentUser?.role || null);
 
   // Fetch batch details
   const { data: batch } = await supabase
@@ -716,25 +721,57 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
                   <p className="text-xs text-muted-foreground font-medium">No mortality events recorded.</p>
                 </div>
               ) : (
-                mortalityEvents.map(evt => (
-                  <div key={evt.id} className="p-3 hover:bg-muted/5 transition-colors border-l-2 border-l-destructive/50">
+                mortalityEvents.map(evt => {
+                  const voided = Boolean(evt.voided_at);
+
+                  return (
+                  <div
+                    key={evt.id}
+                    className={cn(
+                      'p-3 transition-colors border-l-2',
+                      voided
+                        ? 'border-l-warning/50 bg-muted/20 opacity-75'
+                        : 'border-l-destructive/50 hover:bg-muted/5'
+                    )}
+                  >
                     <div className="flex justify-between items-start mb-1">
-                      <span className="text-xs font-semibold text-foreground">{evt.stage} - {evt.cause}</span>
-                      <span className="text-xs font-bold text-destructive font-mono tabular-nums">
+                      <span className="text-xs font-semibold text-foreground">
+                        {evt.stage} - {evt.cause}
+                        {voided ? (
+                          <span className="ml-2 rounded-button border border-warning/30 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold text-warning">
+                            Voided
+                          </span>
+                        ) : null}
+                      </span>
+                      <span className={cn('text-xs font-bold font-mono tabular-nums', voided ? 'text-muted-foreground line-through' : 'text-destructive')}>
                         -{evt.count} birds
                       </span>
                     </div>
                     {evt.notes && <p className="text-[11px] text-muted-foreground">{evt.notes}</p>}
+                    {voided && evt.void_reason ? (
+                      <p className="mt-1 text-[11px] text-muted-foreground">Correction: {evt.void_reason}</p>
+                    ) : null}
                     <div className="flex justify-between items-center mt-1">
                       <div className="text-[10px] text-muted-foreground/60 uppercase">
                         {new Date(evt.recorded_at).toLocaleDateString()}
                       </div>
-                      <div className="text-[10px] font-semibold text-destructive/80 font-mono">
+                      <div className={cn('text-[10px] font-semibold font-mono', voided ? 'text-muted-foreground line-through' : 'text-destructive/80')}>
                         ~KES {(evt.estimated_financial_loss || 0).toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})} loss
                       </div>
                     </div>
+                    {canVoidMortality && !voided ? (
+                      <div className="mt-2 flex justify-end">
+                        <VoidMortalityDialog
+                          eventId={evt.id}
+                          batchNumber={batch.batch_number}
+                          count={Number(evt.count || 0)}
+                          estimatedLoss={Number(evt.estimated_financial_loss || 0)}
+                        />
+                      </div>
+                    ) : null}
                   </div>
-                ))
+                  )
+                })
               )}
             </div>
             <div className="p-3 border-t border-border bg-muted/10 flex justify-between items-center">

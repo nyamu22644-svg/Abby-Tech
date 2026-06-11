@@ -42,6 +42,7 @@ export async function getSystemAlerts(supabase: any) {
     supabase
       .from('mortality_events')
       .select('id, count, cause, stage, recorded_at, egg_batches(batch_number)')
+      .is('voided_at', null)
       .order('recorded_at', { ascending: false })
       .limit(20),
     (supabase as any)

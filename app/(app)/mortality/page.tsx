@@ -5,8 +5,11 @@ import { format } from 'date-fns'
 
 import { Card } from '@/components/ui/card'
 import { createClient } from '@/lib/supabase/server'
+import { getCurrentUserProfile } from '@/lib/auth'
+import { isManagerOrAbove } from '@/lib/rbac'
 import { cn } from '@/lib/utils'
 import { LogMortalityDialog } from './components/log-mortality-dialog'
+import { VoidMortalityDialog } from './components/void-mortality-dialog'
 
 export const metadata: Metadata = {
   title: 'Mortality | Smart Hatchery OS',
@@ -15,12 +18,15 @@ export const metadata: Metadata = {
 
 export default async function MortalityDashboard() {
   const supabase = await createClient()
+  const currentUser = await getCurrentUserProfile()
+  const canVoidMortality = isManagerOrAbove(currentUser?.role || null)
 
   const [{ data: batches }, { data: events }] = await Promise.all([
     supabase
       .from('egg_batches')
       .select('id, batch_number')
       .in('status', ['LOGGED', 'SETTER', 'HATCHER', 'BROODER'])
+      .is('deleted_at', null)
       .order('created_at', { ascending: false }),
     supabase
       .from('mortality_events')
@@ -32,6 +38,8 @@ export default async function MortalityDashboard() {
   ])
 
   const typedEvents = events || []
+  const activeEvents = typedEvents.filter((evt) => !evt.voided_at)
+  const voidedEventsCount = typedEvents.length - activeEvents.length
 
   const today = new Date()
   today.setHours(0, 0, 0, 0)
@@ -48,7 +56,7 @@ export default async function MortalityDashboard() {
   const lossByStage: Record<string, number> = {}
   const lossByBatch: Record<string, number> = {}
 
-  typedEvents.forEach((evt) => {
+  activeEvents.forEach((evt) => {
     const eventCount = Number(evt.count || 0)
     const evtDate = new Date(evt.recorded_at)
     if (evtDate >= today) mortalityToday += eventCount
@@ -127,7 +135,7 @@ export default async function MortalityDashboard() {
               <p className="mt-0.5 text-xs text-muted-foreground">Latest recorded operational losses</p>
             </div>
             <span className="rounded-button bg-destructive/10 px-2.5 py-1 text-xs font-semibold text-destructive">
-              {typedEvents.length.toLocaleString()} records
+              {activeEvents.length.toLocaleString()} active{voidedEventsCount > 0 ? ` / ${voidedEventsCount.toLocaleString()} voided` : ''}
             </span>
           </div>
 
@@ -135,35 +143,71 @@ export default async function MortalityDashboard() {
             <EmptyState message="No mortality events recorded yet." />
           ) : (
             <div className="divide-y divide-border">
-              {typedEvents.slice(0, 8).map((evt) => (
-                <div key={evt.id} className="grid gap-3 px-5 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
+              {typedEvents.slice(0, 12).map((evt) => {
+                const voided = Boolean(evt.voided_at)
+                const batchName = getBatchName(evt)
+
+                return (
+                <div
+                  key={evt.id}
+                  className={cn(
+                    'grid gap-3 px-5 py-3 md:grid-cols-[minmax(0,1fr)_auto] md:items-center',
+                    voided && 'bg-muted/20 opacity-75'
+                  )}
+                >
                   <div className="flex min-w-0 items-start gap-3">
-                    <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+                    <span className={cn(
+                      'mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full',
+                      voided ? 'bg-muted text-muted-foreground' : 'bg-destructive/10 text-destructive'
+                    )}>
                       <AlertTriangle className="h-4 w-4" />
                     </span>
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <p className="font-mono text-sm font-semibold text-foreground">{getBatchName(evt)}</p>
+                        <p className="font-mono text-sm font-semibold text-foreground">{batchName}</p>
                         <span className="rounded-button border border-border px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
                           {formatLabel(evt.stage)}
                         </span>
                         <span className="rounded-button border border-border px-2 py-0.5 text-[11px] font-semibold text-muted-foreground">
                           {formatLabel(evt.cause)}
                         </span>
+                        {voided ? (
+                          <span className="rounded-button border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-semibold text-warning">
+                            Voided
+                          </span>
+                        ) : null}
                       </div>
                       {evt.notes && (
                         <p className="mt-1 max-w-xl truncate text-[13px] text-muted-foreground">{evt.notes}</p>
                       )}
+                      {voided && evt.void_reason ? (
+                        <p className="mt-1 max-w-xl text-[12px] text-muted-foreground">
+                          Correction: {evt.void_reason}
+                        </p>
+                      ) : null}
                     </div>
                   </div>
                   <div className="flex items-center justify-between gap-4 md:block md:text-right">
-                    <p className="text-sm font-semibold tabular-nums text-destructive">-{Number(evt.count || 0).toLocaleString()}</p>
+                    <p className={cn('text-sm font-semibold tabular-nums', voided ? 'text-muted-foreground line-through' : 'text-destructive')}>
+                      -{Number(evt.count || 0).toLocaleString()}
+                    </p>
                     <p className="mt-0.5 text-xs text-muted-foreground">
                       {format(new Date(evt.recorded_at), 'MMM d, HH:mm')}
                     </p>
+                    {canVoidMortality && !voided ? (
+                      <div className="mt-2">
+                        <VoidMortalityDialog
+                          eventId={evt.id}
+                          batchNumber={batchName}
+                          count={Number(evt.count || 0)}
+                          estimatedLoss={Number(evt.estimated_financial_loss || 0)}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </div>
-              ))}
+                )
+              })}
             </div>
           )}
         </Card>

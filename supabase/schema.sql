@@ -478,6 +478,10 @@ CREATE TABLE incubator_environmental_logs (
     recorded_by uuid REFERENCES user_profiles(id) ON DELETE SET NULL,
     recorded_at timestamp with time zone NOT NULL DEFAULT now(),
     created_at timestamp with time zone NOT NULL DEFAULT now(),
+    voided_at timestamp with time zone,
+    voided_by uuid REFERENCES user_profiles(id) ON DELETE SET NULL,
+    void_reason text,
+    void_operational_log_id uuid,
     sync_version integer NOT NULL DEFAULT 1 CHECK (sync_version >= 1),
     client_updated_at timestamp with time zone,
     last_synced_at timestamp with time zone,
@@ -558,6 +562,8 @@ CREATE TABLE mortality_events (
 );
 
 CREATE INDEX idx_mortality_events_batch ON mortality_events(batch_id, recorded_at DESC);
+CREATE INDEX idx_mortality_events_active_batch ON mortality_events(batch_id, recorded_at DESC) WHERE voided_at IS NULL;
+CREATE INDEX idx_mortality_events_voided ON mortality_events(voided_at) WHERE voided_at IS NOT NULL;
 
 CREATE TABLE operational_logs (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -576,6 +582,10 @@ CREATE TABLE operational_logs (
 );
 
 CREATE INDEX idx_operational_logs_entity ON operational_logs(entity_type, entity_id, recorded_at DESC);
+
+ALTER TABLE mortality_events
+ADD CONSTRAINT fk_mortality_events_void_operational_log
+FOREIGN KEY (void_operational_log_id) REFERENCES operational_logs(id) ON DELETE SET NULL;
 
 -- ============================================================================
 -- COMMERCIAL OPERATIONS
