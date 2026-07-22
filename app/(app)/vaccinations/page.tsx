@@ -24,6 +24,9 @@ type VaccinationTask = {
   batchId: string
   batchNumber: string
   chickCount: number
+  batchAgeDays: number
+  hatchDateSource: 'actual' | 'expected'
+  hatchDate: Date
   vaccineName: string
   dueDay: number
   dueDate: Date
@@ -47,8 +50,8 @@ export default async function VaccinationsPage() {
       .maybeSingle(),
     supabase
       .from('egg_batches')
-      .select('id, batch_number, actual_hatch_date, quantity_hatched, mortality_count, status')
-      .not('actual_hatch_date', 'is', null)
+      .select('id, batch_number, actual_hatch_date, expected_hatch_date, quantity_hatched, mortality_count, status')
+      .or('actual_hatch_date.not.is.null,expected_hatch_date.not.is.null')
       .not('status', 'in', '(FAILED,DISCARDED,CANCELLED)')
       .is('deleted_at', null)
       .order('actual_hatch_date', { ascending: false })
@@ -178,6 +181,12 @@ export default async function VaccinationsPage() {
                       <span className="mt-1 block text-[11px] text-muted-foreground">
                         {task.chickCount.toLocaleString()} chicks
                       </span>
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        Age: {task.batchAgeDays.toLocaleString()} day{task.batchAgeDays === 1 ? '' : 's'}{task.hatchDateSource === 'expected' ? ' (est.)' : ''}
+                      </span>
+                      <span className="mt-1 block text-[11px] text-muted-foreground">
+                        Hatch: {formatDate(task.hatchDate)} ({task.hatchDateSource})
+                      </span>
                     </td>
                     <td className="px-3 py-3">
                       <span className="block truncate text-[13px] font-semibold text-foreground">{task.vaccineName}</span>
@@ -231,10 +240,15 @@ function buildVaccinationTasks({
   today: Date
 }) {
   return batches.flatMap((batch) => {
-    const hatchDate = parseDate(batch.actual_hatch_date)
+    const actualHatchDate = parseDate(batch.actual_hatch_date)
+    const expectedHatchDate = parseDate(batch.expected_hatch_date)
+    const hatchDate = actualHatchDate || expectedHatchDate
     if (!hatchDate) return []
 
+    const hatchDateSource = actualHatchDate ? 'actual' : 'expected'
+    const batchAgeDays = Math.max(0, Math.floor((today.getTime() - hatchDate.getTime()) / (24 * 60 * 60 * 1000)))
     const chickCount = Math.max(0, Number(batch.quantity_hatched || 0) - Number(batch.mortality_count || 0))
+
     return rules.map((rule) => {
       const dueDate = startOfDay(addDays(hatchDate, rule.due_day))
       const dueDateValue = toDateInputValue(dueDate)
@@ -252,6 +266,9 @@ function buildVaccinationTasks({
         batchId: batch.id,
         batchNumber: batch.batch_number,
         chickCount,
+        batchAgeDays,
+        hatchDateSource,
+        hatchDate,
         vaccineName: rule.name,
         dueDay: rule.due_day,
         dueDate,

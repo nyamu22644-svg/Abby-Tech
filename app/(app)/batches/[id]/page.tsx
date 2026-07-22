@@ -2,7 +2,7 @@ import { Metadata } from 'next';
 import type { ReactNode } from 'react';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { ArrowLeft, ThermometerSun, AlertTriangle, Eye, Settings, HeartPulse, DollarSign, TrendingUp, TrendingDown, Factory, ArrowRight, CheckCircle2, MapPin, PackageCheck } from 'lucide-react';
+import { ArrowLeft, ThermometerSun, AlertTriangle, Eye, Settings, HeartPulse, DollarSign, TrendingUp, TrendingDown, Factory, ArrowRight, CheckCircle2, MapPin, PackageCheck, AlertCircle } from 'lucide-react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { addDays, isPast } from 'date-fns';
@@ -13,8 +13,12 @@ import { notFound } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import { AddCostDialog } from '../components/add-cost-dialog';
 import { BatchLifecycleActionDialog } from '../components/batch-lifecycle-action-dialog';
+import { ReopenBatchButton } from '../components/reopen-batch-button';
+import { RepairHatchDateDialog } from '../components/repair-hatch-date-dialog';
+import { HatchGracePeriodTimeline } from '../components/hatch-grace-period-timeline';
 import { VoidMortalityDialog } from '../../mortality/components/void-mortality-dialog';
 import { calculateBatchCostSnapshot } from '@/lib/costing/batch-costing';
+import { canAutoFailSuggestBatch } from '@/lib/alerts/hatch-grace-period-alerts';
 import { CANDLING_WINDOW_LABEL, CANDLING_WINDOW_START_DAY, LOCKDOWN_DAY, LOCKDOWN_LABEL } from '@/lib/incubation/rules';
 
 export const metadata: Metadata = {
@@ -262,6 +266,18 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
         canMoveToLockdown={canMoveToLockdown}
         lockdownOpensLabel={lockdownOpensAt ? formatDate(lockdownOpensAt.toISOString()) : null}
       />
+
+      {/* Hatch Grace Period Timeline - Only show if batch has expected_hatch_date and not closed */}
+      {batch.expected_hatch_date && !['COMPLETED', 'BROODER', 'FAILED', 'DISCARDED', 'CANCELLED'].includes(batch.status) && (
+        <HatchGracePeriodTimeline
+          batchId={batch.id}
+          batchNumber={batch.batch_number}
+          expectedHatchDate={batch.expected_hatch_date}
+          currentStatus={batch.status}
+          daysOverdue={Math.max(0, Math.floor((new Date().getTime() - new Date(batch.expected_hatch_date).getTime()) / (24 * 60 * 60 * 1000)))}
+          canAutoFail={canAutoFailSuggestBatch(batch, new Date())}
+        />
+      )}
 
       {/* Traceability Overview */}
       <Card className="overflow-hidden">
@@ -530,8 +546,10 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
                 <TimelineEvent 
                   icon={<Eye className="w-5 h-5" />}
                   title="Candling & Viability Check"
-                  date={`Window (${CANDLING_WINDOW_LABEL})`}
-                  description="Mid-cycle fertility inspection. Record infertile or culled eggs so hatch yield and inventory stay accurate."
+                  date={candlingRecorded ? formatDate(batch.candling_recorded_at) : `Window (${CANDLING_WINDOW_LABEL})`}
+                  description={candlingRecorded 
+                    ? `✓ Completed: ${culled.toLocaleString()} eggs culled and removed from active count`
+                    : "Mid-cycle fertility inspection. Record infertile or culled eggs so hatch yield and inventory stay accurate."}
                   status={candlingTimelineStatus}
                 />
                 <TimelineEvent 
@@ -557,6 +575,24 @@ export default async function BatchDetailsPage({ params }: { params: Promise<{ i
         {/* Action & Linked Data Sidebar */}
         <div className="grid grid-cols-1 gap-5 md:grid-cols-2 2xl:grid-cols-3">
           
+          {['BROODER', 'COMPLETED'].includes(batch.status || '') ? (
+            <Card className="overflow-hidden">
+              <div className="flex items-center justify-between border-b border-border bg-muted/10 p-4">
+                <h3 className="flex items-center gap-2 text-sm font-semibold tracking-tight text-foreground">
+                  <HeartPulse className="w-4 h-4" />
+                  Repair Hatch Date
+                </h3>
+              </div>
+              <div className="p-4">
+                <RepairHatchDateDialog
+                  batchId={batch.id}
+                  batchNumber={batch.batch_number}
+                  currentHatchDate={batch.actual_hatch_date}
+                />
+              </div>
+            </Card>
+          ) : null}
+
           <Card className="overflow-hidden">
             <div className="flex items-center justify-between border-b border-border bg-muted/10 p-4">
               <h3 className="flex items-center gap-2 text-sm font-semibold tracking-tight text-foreground">
@@ -818,7 +854,8 @@ function NextBestBatchAction({
   canMoveToLockdown: boolean
   lockdownOpensLabel: string | null
 }) {
-  const closedStatuses = ['COMPLETED', 'BROODER', 'FAILED', 'DISCARDED', 'CANCELLED'];
+  const brooderStatus = batch.status === 'BROODER';
+  const closedStatuses = ['COMPLETED', 'FAILED', 'DISCARDED', 'CANCELLED'];
   const isClosed = closedStatuses.includes(batch.status || '');
 
   if (batch.status === 'LOGGED' || !batch.incubator_id) {
@@ -905,6 +942,66 @@ function NextBestBatchAction({
             currentCulled={currentCulled}
             triggerLabel="Record Hatch"
           />
+        }
+      />
+    );
+  }
+
+  if (batch.status === 'AWAITING_HATCH_COUNT') {
+    const daysOverdue = Math.floor((new Date().getTime() - new Date(batch.expected_hatch_date).getTime()) / (1000 * 60 * 60 * 24));
+    return (
+      <BatchActionCard
+        icon={<AlertCircle className="h-5 w-5 text-warning" />}
+        title="Hatch count recording overdue"
+        description={`This batch hatch date was ${daysOverdue} day${daysOverdue !== 1 ? 's' : ''} ago. The cycle cannot complete until the final chick count is recorded. Reopen the batch to record hatch data now.`}
+        action={
+          <div className="flex flex-col gap-2">
+            <BatchLifecycleActionDialog
+              action="hatch"
+              batchId={batch.id}
+              batchNumber={batch.batch_number}
+              loadedEggs={loadedEggs}
+              currentCulled={currentCulled}
+              triggerLabel="Record Hatch Now"
+              compact
+            />
+            <p className="text-xs text-muted-foreground">or</p>
+            <ReopenBatchButton batchId={batch.id} batchNumber={batch.batch_number} />
+          </div>
+        }
+      />
+    );
+  }
+
+  if (batch.status === 'FAILED') {
+    return (
+      <BatchActionCard
+        icon={<AlertTriangle className="h-5 w-5 text-destructive" />}
+        title="Batch marked as failed - Recovery available"
+        description="This batch can be reopened to record hatch data. Use this option to recover the batch cycle and complete the recording."
+        action={
+          <ReopenBatchButton batchId={batch.id} batchNumber={batch.batch_number} />
+        }
+      />
+    );
+  }
+
+  if (brooderStatus) {
+    return (
+      <BatchActionCard
+        icon={<CheckCircle2 className="h-5 w-5" />}
+        title="Batch is in the brooder stage"
+        description="Hatch results are recorded and chicks are now managed in brooder. Record mortality, vaccinations, and orders as needed."
+        action={
+          <Button
+            render={<Link href="/orders" />}
+            nativeButton={false}
+            variant="outline"
+            className="w-full gap-2 sm:w-auto"
+          >
+            <ArrowRight className="h-4 w-4" />
+            Review Orders
+          </Button>
         }
       />
     );

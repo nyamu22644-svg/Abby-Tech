@@ -5,6 +5,8 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { logBatchCreated, logBatchUpdated, logBatchStatusChange, logOperationalCostAdded } from '@/lib/audit'
 import { runOrderAutomation } from '@/lib/automation/order-automation'
+import { runBatchWorkflowAutomation } from '@/lib/automation/batch-workflow'
+import { executeEscalationJob, executeDailyAutomationJobs } from '@/lib/automation/job-scheduler'
 import { getCurrentUserProfile, requireAuth, requireRole } from '@/lib/auth'
 import type { CompleteBatchWorkflow } from '@/types/batch-workflow.types'
 import { CANDLING_WINDOW_START_DAY, LOCKDOWN_DAY } from '@/lib/incubation/rules'
@@ -982,13 +984,13 @@ export async function moveBatchToHatcher(id: string, notes?: string) {
   return { success: true }
 }
 
-export async function recordHatch(id: string, hatchedCount: number, finalCulledCount = 0, notes?: string) {
+export async function recordHatch(id: string, hatchedCount: number, finalCulledCount = 0, notes?: string, actualHatchDate?: string) {
   const supabase = await createClient()
   const db = supabase as any
 
   const { data: currentBatch, error: fetchError } = await supabase
     .from('egg_batches')
-    .select('id, status')
+    .select('id, status, expected_hatch_date')
     .eq('id', id)
     .single()
 
@@ -1004,12 +1006,19 @@ export async function recordHatch(id: string, hatchedCount: number, finalCulledC
     return { success: false, error: 'Final culled count cannot be negative' }
   }
 
+  const inputHatchDate = actualHatchDate ? new Date(actualHatchDate) : null
+  const isLateEntry = currentBatch.expected_hatch_date &&
+    new Date(inputHatchDate || new Date()) > new Date(currentBatch.expected_hatch_date)
+
+  const lateEntryTimestamp = isLateEntry ? new Date().toISOString() : null
+
   const recordedBy = await getCurrentUserId(supabase)
   const { error } = await db.rpc('record_hatch_atomic', {
     p_batch_id: id,
     p_hatched_count: hatchedCount,
     p_final_culled_count: finalCulledCount,
     p_notes: notes || null,
+    p_actual_hatch_date: actualHatchDate || null,
     p_recorded_by: recordedBy,
   })
 
@@ -1017,12 +1026,52 @@ export async function recordHatch(id: string, hatchedCount: number, finalCulledC
     return { success: false, error: error.message || 'Failed to record hatch' }
   }
 
-  if (currentBatch.status !== 'COMPLETED') {
-    await logBatchStatusChange(id, currentBatch.status, 'COMPLETED')
+  // Update batch with late_entry_recorded_at if applicable
+  if (isLateEntry && lateEntryTimestamp) {
+    const daysLate = Math.floor(
+      (new Date().getTime() - new Date(currentBatch.expected_hatch_date).getTime()) / 
+      (24 * 60 * 60 * 1000)
+    )
+    
+    await supabase
+      .from('egg_batches')
+      .update({ late_entry_recorded_at: lateEntryTimestamp })
+      .eq('id', id)
+
+    // Audit log for late entry
+    const { error: auditError } = await supabase
+      .from('audit_events')
+      .insert({
+        batch_id: id,
+        event_type: 'HATCH_LATE_ENTRY',
+        days_late: daysLate,
+        metadata: {
+          hatched_count: hatchedCount,
+          culled_count: finalCulledCount,
+          notes: notes || null,
+        },
+        recorded_by: recordedBy,
+        recorded_at: new Date().toISOString(),
+      })
+
+    if (auditError) {
+      console.warn('[Batch Actions] Failed to log late hatch entry audit:', auditError)
+    }
+  }
+
+  const newStatus = hatchedCount > 0 ? 'BROODER' : 'FAILED'
+  if (currentBatch.status !== newStatus) {
+    await logBatchStatusChange(id, currentBatch.status, newStatus)
   }
 
   await markPaidOrdersReadyForHandover(db, id)
   await runOrderAutomation(db)
+  await runBatchWorkflowAutomation(db)
+  
+  // Trigger automation checks after hatch completion
+  await executeDailyAutomationJobs(db).catch((err) => {
+    console.error('[Batch Actions] Error running daily automation:', err)
+  })
 
   revalidatePath('/batches')
   revalidatePath(`/batches/${id}`)
@@ -1030,6 +1079,49 @@ export async function recordHatch(id: string, hatchedCount: number, finalCulledC
   revalidatePath('/dashboard')
   revalidatePath('/orders')
   revalidatePath('/alerts')
+  return { success: true }
+}
+
+export async function repairBatchHatchDate(batchId: string, actualHatchDate: string) {
+  const supabase = await createClient()
+
+  const { data: currentBatch, error: fetchError } = await supabase
+    .from('egg_batches')
+    .select('id, actual_hatch_date')
+    .eq('id', batchId)
+    .single()
+
+  if (fetchError || !currentBatch) {
+    return { success: false, error: fetchError?.message || 'Batch not found' }
+  }
+
+  const parsedHatchDate = new Date(actualHatchDate)
+  if (Number.isNaN(parsedHatchDate.getTime())) {
+    return { success: false, error: 'Invalid hatch date' }
+  }
+
+  const isoHatchDate = parsedHatchDate.toISOString()
+  if (currentBatch.actual_hatch_date === isoHatchDate) {
+    return { success: true }
+  }
+
+  const { data: updatedBatch, error: updateError } = await supabase
+    .from('egg_batches')
+    .update({ actual_hatch_date: isoHatchDate, updated_at: new Date().toISOString() })
+    .eq('id', batchId)
+    .select()
+    .single()
+
+  if (updateError || !updatedBatch) {
+    return { success: false, error: updateError?.message || 'Failed to update hatch date' }
+  }
+
+  await logBatchUpdated(batchId, currentBatch, { actual_hatch_date: isoHatchDate })
+  revalidatePath(`/batches/${batchId}`)
+  revalidatePath('/batches')
+  revalidatePath('/dashboard')
+  revalidatePath('/orders')
+
   return { success: true }
 }
 
@@ -1191,4 +1283,47 @@ export async function addOperationalCost(formData: FormData) {
 
   revalidatePath(`/batches/${result.data.batch_id}`)
   return { success: true }
+}
+
+/**
+ * Reopen a batch that is awaiting hatch count or failed, to allow recording hatch data
+ */
+export async function reopenBatchForHatchRecording(
+  batchId: string,
+  notes?: string
+): Promise<{ success: boolean; error?: string; message?: string }> {
+  try {
+    const supabase = await createClient()
+    const profile = await requireAuth()
+
+    const { data: result, error } = await supabase.rpc('reopen_batch_for_hatch_recording', {
+      p_batch_id: batchId,
+      p_reopened_by: profile.id,
+      p_notes: notes || null,
+    })
+
+    if (error) {
+      console.error('[Batch Actions] Error reopening batch:', error)
+      return { success: false, error: error.message || 'Failed to reopen batch' }
+    }
+
+    if (!result?.success) {
+      return { success: false, error: result?.error || 'Unknown error' }
+    }
+
+    // Log the action
+    await logBatchStatusChange(batchId, result.previous_status, result.new_status)
+
+    revalidatePath(`/batches/${batchId}`)
+    revalidatePath('/batches')
+    revalidatePath('/incubation')
+
+    return {
+      success: true,
+      message: result.message || 'Batch reopened for hatch recording',
+    }
+  } catch (error) {
+    console.error('[Batch Actions] Exception reopening batch:', error)
+    return { success: false, error: String(error) }
+  }
 }

@@ -44,9 +44,9 @@ const actionCopy = {
     icon: Lock,
   },
   hatch: {
-    title: 'Record Hatch Completion',
-    description: 'Record final chick count. This closes the incubation cycle and frees incubator slots.',
-    button: 'Complete Hatch',
+    title: 'Record Hatch',
+    description: 'Record final chick count and move the batch into the brooder stage for post-hatch management.',
+    button: 'Record Hatch',
     icon: PackageCheck,
   },
 } as const
@@ -67,6 +67,7 @@ export function BatchLifecycleActionDialog({
   const [removedCount, setRemovedCount] = useState(Number(currentCulled || 0))
   const [hatchedCount, setHatchedCount] = useState(Math.max(loadedEggs - Number(currentCulled || 0), 0))
   const [finalCulledCount, setFinalCulledCount] = useState(0)
+  const [actualHatchDate, setActualHatchDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [notes, setNotes] = useState('')
   const { acquireSubmitLock, releaseSubmitLock } = useSubmitLock()
 
@@ -86,6 +87,7 @@ export function BatchLifecycleActionDialog({
       setError(null)
       setRemovedCount(Number(currentCulled || 0))
       setHatchedDefaults()
+      setActualHatchDate(new Date().toISOString().slice(0, 10))
       setNotes('')
     }
     setOpen(nextOpen)
@@ -112,7 +114,7 @@ export function BatchLifecycleActionDialog({
           ? await recordCandling(batchId, removedCount, notes)
           : action === 'lockdown'
             ? await moveBatchToHatcher(batchId, notes)
-            : await recordHatch(batchId, hatchedCount, finalCulledCount, notes)
+            : await recordHatch(batchId, hatchedCount, finalCulledCount, notes, actualHatchDate)
 
       if (!result.success) {
         setError(result.error || 'Action failed')
@@ -120,7 +122,7 @@ export function BatchLifecycleActionDialog({
         return
       }
 
-      toast.success(action === 'candling' ? 'Candling recorded' : action === 'lockdown' ? 'Batch moved to hatch prep' : 'Hatch completed')
+      toast.success(action === 'candling' ? 'Candling recorded' : action === 'lockdown' ? 'Batch moved to hatch prep' : 'Hatch recorded')
       setOpen(false)
       router.refresh()
     } finally {
@@ -231,6 +233,24 @@ export function BatchLifecycleActionDialog({
                     onChange={(event) => setFinalCulledCount(Number(event.target.value))}
                     className="h-9 w-full rounded-input border border-input bg-background px-3 text-sm outline-none transition-all focus:border-primary focus:ring-4 focus:ring-primary/10"
                   />
+                </div>
+              </div>
+              <div className="space-y-3">
+                <div className="space-y-1.5">
+                  <label htmlFor="actualHatchDate" className="text-xs font-semibold text-muted-foreground">
+                    Actual Hatch Date
+                  </label>
+                  <input
+                    id="actualHatchDate"
+                    type="date"
+                    required
+                    value={actualHatchDate}
+                    onChange={(event) => setActualHatchDate(event.target.value)}
+                    className="h-9 w-full rounded-input border border-input bg-background px-3 text-sm outline-none transition-all focus:border-primary focus:ring-4 focus:ring-primary/10"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Enter the real hatch day when recording or correcting hatch counts.
+                  </p>
                 </div>
               </div>
               <div className="rounded-button border border-border bg-muted/30 p-3 text-sm">
